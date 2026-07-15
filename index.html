@@ -327,7 +327,7 @@
 <script>
 // ====== SUPABASE CONFIG — fill these in with your project's values ======
 // Supabase dashboard → Project Settings → API
-const SUPABASE_URL = 'https://mrgxpyfuazmshddpvdbg.supabase.co';
+const SUPABASE_URL = 'https://mrgxpyfuazmshddpvdbg.supabase.co/rest/v1/';        // e.g. https://abcdefgh.supabase.co
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1yZ3hweWZ1YXptc2hkZHB2ZGJnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxMjAzMzQsImV4cCI6MjA5OTY5NjMzNH0.vV2pRslOYUl32AvN2bzmvhyv8tFQ_LSnYyLL4Lvue_k';
 // ==========================================================================
 
@@ -652,8 +652,32 @@ function showToast(msg, isErr){
   setTimeout(function(){ t.remove(); }, 3200);
 }
 
+let localTheme = null; // per-browser only, never synced to the shared board
+function getSystemTheme(){
+  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+}
+function initLocalTheme(){
+  try{
+    const saved = localStorage.getItem('theme-pref');
+    localTheme = saved || getSystemTheme();
+  }catch(e){
+    localTheme = getSystemTheme();
+  }
+  // If the person never manually chose a theme, keep following the system live.
+  if(window.matchMedia){
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(e){
+      let hasManualPref = false;
+      try{ hasManualPref = !!localStorage.getItem('theme-pref'); }catch(err){}
+      if(!hasManualPref){
+        localTheme = e.matches ? 'dark' : 'light';
+        render();
+      }
+    });
+  }
+}
+
 function applyTheme(){
-  document.body.className = STATE.theme==='light' ? 'light' : '';
+  document.body.className = localTheme==='light' ? 'light' : '';
 }
 
 function render(){
@@ -854,10 +878,11 @@ function renderHeader(){
   ]);
   const upload = el('input',{type:'file', id:'csvInput', accept:'.csv', onchange:handleCsvFile});
   const importInput = el('input',{type:'file', id:'importInput', accept:'.json', onchange:handleImportFile});
-  const themeBtn = el('button',{class:'theme-toggle', title:'Toggle theme', onclick:function(){
-    STATE.theme = STATE.theme==='light' ? 'dark' : 'light';
-    saveState(); render();
-  }}, STATE.theme==='light' ? '\u2600\ufe0f' : '\ud83c\udf19');
+  const themeBtn = el('button',{class:'theme-toggle', title:'Toggle theme (this device only)', onclick:function(){
+    localTheme = localTheme==='light' ? 'dark' : 'light';
+    try{ localStorage.setItem('theme-pref', localTheme); }catch(e){}
+    render();
+  }}, localTheme==='light' ? '\u2600\ufe0f' : '\ud83c\udf19');
   const actions = el('div',{class:'actions'},[
     el('label',{class:'btn primary', for:'csvInput'}, '\u2b06 Upload Trips CSV'),
     upload,
@@ -1605,6 +1630,7 @@ function ensureDatalist(){
 
 (async function init(){
   VIEW.weekStart = getWeekStart(new Date());
+  initLocalTheme();
   await loadState();
   render();
   subscribeRealtime();
