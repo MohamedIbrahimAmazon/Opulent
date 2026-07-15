@@ -105,6 +105,14 @@
   .btn.primary{ background:var(--amber); color:#1a1204; border-color:var(--amber); font-weight:600; }
   .btn.primary:hover{ background:#ffb254; }
   .btn.small{ padding:5px 10px; font-size:11.5px; }
+  .conn-badge{
+    display:inline-flex; align-items:center; font-size:11px; font-weight:600; padding:7px 11px;
+    border-radius:999px; border:1px solid var(--line); background:var(--bg-card); white-space:nowrap;
+  }
+  .conn-badge.conn-live{ color:var(--green); border-color:rgba(74,222,128,0.4); }
+  .conn-badge.conn-offline{ color:var(--red); border-color:rgba(239,87,87,0.4); }
+  .conn-badge.conn-connecting{ color:var(--amber); border-color:var(--amber-dim); }
+  .conn-badge.conn-local{ color:var(--text-dim); }
   .theme-toggle{
     width:34px;height:34px;border-radius:999px; border:1px solid var(--line); background:var(--bg-card);
     cursor:pointer; display:flex;align-items:center;justify-content:center; font-size:15px; color:var(--text);
@@ -327,9 +335,11 @@ const BOARD_ROW_ID = 'main'; // single shared row holding the whole board state
 const sbReady = SUPABASE_URL.indexOf('YOUR_SUPABASE_URL') !== 0 && window.supabase;
 const sb = sbReady ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 let suppressRealtime = false; // avoids re-rendering off our own write
+let lastKnownUpdatedAt = null; // for optimistic-concurrency check before overwriting
+let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [] };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 const DUR = { solo1: 14*60, solo2: 38*60, solo5: 110*60 };
@@ -368,6 +378,10 @@ function fmtWeekLabel(ws){
     ? `${ws.getDate()}\u2013${we.getDate()} ${MONTHS[ws.getMonth()]} ${we.getFullYear()}`
     : `${fmtShort(ws)} \u2013 ${fmtShort(we)} ${we.getFullYear()}`;
 }
+function fmtDateTime(d){
+  const dt = new Date(d);
+  return dt.toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+}
 function parseCsvDT(str){
   if(!str) return null;
   const m = str.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
@@ -390,12 +404,16 @@ function fmtEndLabel(b){
 async function loadState(){
   if(sb){
     try{
-      const { data, error } = await sb.from('board_state').select('data').eq('id', BOARD_ROW_ID).maybeSingle();
+      const { data, error } = await sb.from('board_state').select('data, updated_at').eq('id', BOARD_ROW_ID).maybeSingle();
       if(error) throw error;
-      if(data && data.data){ STATE = data.data; }
-      else{
+      if(data && data.data){
+        STATE = data.data;
+        lastKnownUpdatedAt = data.updated_at || null;
+      } else {
         // First run ever: seed the shared row so everyone starts from the same place.
-        await sb.from('board_state').upsert({ id: BOARD_ROW_ID, data: STATE });
+        const nowIso = new Date().toISOString();
+        await sb.from('board_state').upsert({ id: BOARD_ROW_ID, data: STATE, updated_at: nowIso });
+        lastKnownUpdatedAt = nowIso;
       }
     }catch(e){
       console.error('Supabase load failed, check SUPABASE_URL/SUPABASE_ANON_KEY and RLS policy.', e);
@@ -415,14 +433,28 @@ async function loadState(){
 }
 
 let saveTimer=null;
-function saveState(){
+function saveState(opts){
+  opts = opts || {};
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
     if(sb){
       try{
+        // Optimistic-concurrency check: if someone else saved since we last loaded/saved,
+        // don't silently clobber their change -- warn and let the person reload first.
+        if(!opts.force){
+          const { data: current, error: checkErr } = await sb.from('board_state').select('updated_at').eq('id', BOARD_ROW_ID).maybeSingle();
+          if(!checkErr && current && lastKnownUpdatedAt && current.updated_at && current.updated_at !== lastKnownUpdatedAt){
+            showConflictWarning();
+            return;
+          }
+        }
         suppressRealtime = true;
-        const { error } = await sb.from('board_state').upsert({ id: BOARD_ROW_ID, data: STATE, updated_at: new Date().toISOString() });
+        const nowIso = new Date().toISOString();
+        const { error } = await sb.from('board_state').upsert({ id: BOARD_ROW_ID, data: STATE, updated_at: nowIso });
         if(error) throw error;
+        lastKnownUpdatedAt = nowIso;
+        // Best-effort snapshot for the version history / safety net. Never blocks the main save.
+        sb.from('board_backups').insert({ data: STATE }).then(function(){}, function(){});
       }catch(e){
         console.error('Supabase save failed.', e);
         showToast('Could not save to shared board — check console / Supabase config');
@@ -442,6 +474,21 @@ function saveState(){
   }, 150);
 }
 
+function showConflictWarning(){
+  const overlay = el('div',{class:'overlay'});
+  const modal = el('div',{class:'modal'});
+  modal.appendChild(el('div',{class:'modal-head'},[ el('h2',{}, '\u26a0 Someone else just made changes') ]));
+  const body = el('div',{class:'modal-body'});
+  body.appendChild(el('p',{style:'font-size:13px; line-height:1.7; margin:0;'},
+    'Another person saved to this board a moment ago. Saving your change now would overwrite theirs. Reload to get the latest version, then redo your change.'));
+  modal.appendChild(body);
+  modal.appendChild(el('div',{class:'modal-foot'},[
+    el('button',{class:'btn primary', onclick:function(){ window.location.reload(); }}, '\u21bb Reload now')
+  ]));
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
 function subscribeRealtime(){
   if(!sb) return;
   sb.channel('board_state_changes')
@@ -450,13 +497,53 @@ function subscribeRealtime(){
       const incoming = payload.new && payload.new.data;
       if(!incoming) return;
       STATE = incoming;
+      lastKnownUpdatedAt = (payload.new && payload.new.updated_at) || lastKnownUpdatedAt;
       if(!STATE.trucks) STATE.trucks=[];
       if(!STATE.drivers) STATE.drivers=[];
       if(!STATE.blocks) STATE.blocks=[];
       if(!STATE.theme) STATE.theme='dark';
       render();
     })
-    .subscribe();
+    .subscribe(function(status){
+      if(status==='SUBSCRIBED') connectionStatus = 'live';
+      else if(status==='CHANNEL_ERROR' || status==='TIMED_OUT') connectionStatus = 'offline';
+      else if(status==='CLOSED') connectionStatus = 'offline';
+      render();
+    });
+}
+
+async function fetchBackupList(){
+  if(!sb) return [];
+  try{
+    const { data, error } = await sb.from('board_backups').select('id, created_at').order('created_at', {ascending:false}).limit(25);
+    if(error) throw error;
+    return data || [];
+  }catch(e){
+    console.error('Could not fetch backup history.', e);
+    return [];
+  }
+}
+
+async function restoreBackup(id){
+  if(!sb) return;
+  try{
+    const { data, error } = await sb.from('board_backups').select('data').eq('id', id).maybeSingle();
+    if(error) throw error;
+    if(data && data.data){
+      STATE = data.data;
+      if(!STATE.trucks) STATE.trucks=[];
+      if(!STATE.drivers) STATE.drivers=[];
+      if(!STATE.blocks) STATE.blocks=[];
+      if(!STATE.theme) STATE.theme='dark';
+      saveState({force:true});
+      VIEW.showHistory=false;
+      showToast('Restored from backup');
+      render();
+    }
+  }catch(e){
+    console.error('Restore failed.', e);
+    showToast('Could not restore that backup — check console', true);
+  }
 }
 
 function checkConflict(truckId, block){
@@ -585,6 +672,7 @@ function render(){
   if(VIEW.showTrucks) app.appendChild(renderTrucksModal());
   if(VIEW.showDrivers) app.appendChild(renderDriversModal());
   if(VIEW.editingCsv) app.appendChild(renderCsvModal());
+  if(VIEW.showHistory) app.appendChild(renderHistoryModal());
   ensureDatalist();
   maybeScrollToToday();
 }
@@ -701,6 +789,62 @@ function handleImportFile(e){
   e.target.value='';
 }
 
+function renderConnectionBadge(){
+  if(!sb){
+    return el('span',{class:'conn-badge conn-local', title:'Running in local mode (no shared database configured)'}, '\u26aa Local');
+  }
+  if(connectionStatus==='live'){
+    return el('span',{class:'conn-badge conn-live', title:'Connected \u2014 changes sync live with everyone viewing this board'}, '\ud83d\udfe2 Live');
+  }
+  if(connectionStatus==='connecting'){
+    return el('span',{class:'conn-badge conn-connecting', title:'Connecting to the shared board\u2026'}, '\ud83d\udfe1 Connecting');
+  }
+  return el('span',{class:'conn-badge conn-offline', title:'Not connected \u2014 changes may not be saved or synced. Check your internet connection.'}, '\ud83d\udd34 Offline');
+}
+
+async function openHistory(){
+  VIEW.showHistory = true;
+  VIEW.historyList = null; // loading
+  render();
+  const list = await fetchBackupList();
+  VIEW.historyList = list;
+  render();
+}
+
+function renderHistoryModal(){
+  const overlay = el('div',{class:'overlay', onclick:function(e){ if(e.target===overlay){ VIEW.showHistory=false; render(); } }});
+  const modal = el('div',{class:'modal'});
+  modal.appendChild(el('div',{class:'modal-head'},[
+    el('h2',{}, '\ud83d\udd50 Version History'),
+    el('button',{class:'x', onclick:function(){ VIEW.showHistory=false; render(); }}, '\u2715')
+  ]));
+  const body = el('div',{class:'modal-body'});
+  if(!sb){
+    body.appendChild(el('div',{class:'empty-state'}, 'Version history needs a connected shared board (Supabase). Not available in local mode.'));
+  } else if(VIEW.historyList===null){
+    body.appendChild(el('div',{class:'empty-state'}, 'Loading\u2026'));
+  } else if(VIEW.historyList.length===0){
+    body.appendChild(el('div',{class:'empty-state'}, 'No saved versions yet \u2014 they\u2019ll appear here after the next save.'));
+  } else {
+    body.appendChild(el('div',{class:'csv-note'}, '\ud83d\udd39 Every save automatically keeps a snapshot here. Restoring replaces the current shared board for everyone \u2014 this can\u2019t be undone, so double-check before restoring.'));
+    const table = el('table',{class:'list'});
+    table.appendChild(el('tr',{},[ el('th',{},'Saved at'), el('th',{},'') ]));
+    VIEW.historyList.forEach(function(row){
+      table.appendChild(el('tr',{},[
+        el('td',{class:'mono'}, fmtDateTime(row.created_at)),
+        el('td',{}, el('button',{class:'btn small', onclick:function(){
+          if(!window.confirm('Restore the board to how it looked at '+fmtDateTime(row.created_at)+'? This replaces the current shared board for everyone.')) return;
+          restoreBackup(row.id);
+        }}, '\u21a9 Restore this version'))
+      ]));
+    });
+    body.appendChild(table);
+  }
+  modal.appendChild(body);
+  overlay.appendChild(modal);
+  return overlay;
+}
+
 function renderHeader(){
   const nav = el('div',{class:'week-nav'},[
     el('button',{onclick:function(){VIEW.weekStart=addDays(VIEW.weekStart,-7); render();}}, '\u2039'),
@@ -721,9 +865,11 @@ function renderHeader(){
       VIEW.mode==='board' ? '\ud83d\udcca Timeline' : '\ud83d\udcc5 Board'),
     el('button',{class:'btn', onclick:function(){VIEW.showTrucks=true; render();}}, '\ud83d\ude9a Trucks'),
     el('button',{class:'btn', onclick:function(){VIEW.showDrivers=true; render();}}, '\ud83d\udc64 Drivers'),
+    el('button',{class:'btn', title:'View and restore previous saved versions', onclick:function(){ openHistory(); }}, '\ud83d\udd50 History'),
     el('button',{class:'btn', title:'Download a backup file of all your data', onclick:exportData}, '\u2b07 Export'),
     el('label',{class:'btn', for:'importInput', title:'Restore data from a backup file'}, '\u2b06 Import'),
     importInput,
+    renderConnectionBadge(),
     themeBtn
   ]);
   return el('header',{class:'top'},[
