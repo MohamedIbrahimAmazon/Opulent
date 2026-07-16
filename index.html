@@ -30,24 +30,24 @@
     --shadow: 0 8px 24px rgba(0,0,0,0.4);
   }
   body.light{
-    --bg: #f4f5f7;
+    --bg: #eef0f4;
     --bg-panel: #ffffff;
     --bg-card: #ffffff;
-    --bg-card-hover: #eef0f4;
-    --line: #e0e3ea;
-    --line-soft: #ececf1;
-    --amber: #d97a10;
-    --amber-dim: #f0c896;
-    --teal: #0d9488;
-    --violet: #6c5ce7;
-    --gold: #b8860b;
-    --red: #d93636;
-    --red-dim: #fbdcdc;
+    --bg-card-hover: #f4f6f9;
+    --line: #e1e4ea;
+    --line-soft: #edeff3;
+    --amber: #d9720c;
+    --amber-dim: #f4c48a;
+    --teal: #0e8f81;
+    --violet: #7c5cf5;
+    --gold: #ad7d0a;
+    --red: #e0453a;
+    --red-dim: #fbdad6;
     --green: #16a34a;
-    --text: #1c2230;
-    --text-dim: #667085;
-    --text-faint: #98a1b3;
-    --shadow: 0 8px 24px rgba(20,25,35,0.10);
+    --text: #161a22;
+    --text-dim: #5c6472;
+    --text-faint: #97a0ad;
+    --shadow: 0 10px 28px rgba(15,23,42,0.09);
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
@@ -76,7 +76,7 @@
   .brand{ display:flex; align-items:center; gap:12px; }
   .brand .mark{
     width:40px;height:40px;border-radius:9px;
-    background:#f4f1e8;
+    background:#ffffff;
     display:flex;align-items:center;justify-content:center;
     box-shadow: 0 0 0 1px rgba(0,0,0,0.06), 0 4px 14px rgba(0,0,0,0.10);
     flex-shrink:0; padding:4px; overflow:hidden;
@@ -85,6 +85,7 @@
   .brand h1{ font-size:19px; margin:0; font-weight:600; letter-spacing:0.01em; }
   .brand .sub{ font-size:11.5px; color:var(--text-dim); margin-top:1px; }
 
+  .week-nav-group{ display:flex; align-items:center; gap:8px; }
   .week-nav{ display:flex; align-items:center; gap:10px; background:var(--bg-panel); border:1px solid var(--line); border-radius:999px; padding:5px 6px; }
   .week-nav button{
     width:30px;height:30px;border-radius:999px;border:none;background:transparent;color:var(--text);
@@ -92,7 +93,12 @@
   }
   .week-nav button:hover{ background:var(--bg-card-hover); }
   .week-nav .label{ font-family:'Oswald',sans-serif; font-size:13.5px; letter-spacing:0.03em; padding:0 6px; min-width:190px; text-align:center; }
-  .week-nav .today-btn{ background:var(--bg-card); border-radius:999px; padding:5px 12px; font-size:11.5px; color:var(--text-dim); border:1px solid var(--line); cursor:pointer; }
+  .today-btn{
+    background:var(--bg-panel); border:1px solid var(--line); border-radius:999px; padding:8px 16px;
+    font-size:12.5px; font-family:'Oswald',sans-serif; letter-spacing:0.03em; font-weight:600;
+    color:var(--amber); cursor:pointer; white-space:nowrap;
+  }
+  .today-btn:hover{ background:var(--bg-card-hover); border-color:var(--amber-dim); }
 
   .actions{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
   .btn{
@@ -327,7 +333,7 @@
 <script>
 // ====== SUPABASE CONFIG — fill these in with your project's values ======
 // Supabase dashboard → Project Settings → API
-const SUPABASE_URL = 'https://mrgxpyfuazmshddpvdbg.supabase.co';
+const SUPABASE_URL = 'https://mrgxpyfuazmshddpvdbg.supabase.co;
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1yZ3hweWZ1YXptc2hkZHB2ZGJnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxMjAzMzQsImV4cCI6MjA5OTY5NjMzNH0.vV2pRslOYUl32AvN2bzmvhyv8tFQ_LSnYyLL4Lvue_k';
 // ==========================================================================
 
@@ -454,7 +460,7 @@ function saveState(opts){
         if(error) throw error;
         lastKnownUpdatedAt = nowIso;
         // Best-effort snapshot for the version history / safety net. Never blocks the main save.
-        sb.from('board_backups').insert({ data: STATE }).then(function(){}, function(){});
+        maybeSnapshot();
       }catch(e){
         console.error('Supabase save failed.', e);
         showToast('Could not save to shared board — check console / Supabase config');
@@ -510,6 +516,47 @@ function subscribeRealtime(){
       else if(status==='CLOSED') connectionStatus = 'offline';
       render();
     });
+}
+
+const SNAPSHOT_MIN_GAP_MS = 60*60*1000; // at most one backup snapshot per hour, no matter how many saves happen
+const BACKUP_RETENTION_DAYS = 180; // ~6 months
+let snapshottingInProgress = false;
+
+// Only actually writes a new backup row if it's been more than an hour since the last one
+// (checked against the shared table, not just this browser, so it works across everyone using the board).
+async function maybeSnapshot(){
+  if(!sb || snapshottingInProgress) return;
+  snapshottingInProgress = true;
+  try{
+    const { data: latest, error: peekErr } = await sb.from('board_backups')
+      .select('created_at').order('created_at', {ascending:false}).limit(1).maybeSingle();
+    if(peekErr) throw peekErr;
+    const last = latest ? new Date(latest.created_at).getTime() : 0;
+    if(Date.now() - last >= SNAPSHOT_MIN_GAP_MS){
+      const { error } = await sb.from('board_backups').insert({ data: STATE });
+      if(error) throw error;
+      pruneOldBackups();
+    }
+  }catch(e){
+    console.error('Snapshot skipped (non-critical):', e);
+  }finally{
+    snapshottingInProgress = false;
+  }
+}
+
+let pruningInProgress = false;
+async function pruneOldBackups(){
+  if(!sb || pruningInProgress) return;
+  pruningInProgress = true;
+  try{
+    const cutoff = new Date(Date.now() - BACKUP_RETENTION_DAYS*24*60*60*1000).toISOString();
+    const { error } = await sb.from('board_backups').delete().lt('created_at', cutoff);
+    if(error) throw error;
+  }catch(e){
+    console.error('Backup pruning skipped (non-critical):', e);
+  }finally{
+    pruningInProgress = false;
+  }
 }
 
 async function fetchBackupList(){
@@ -870,10 +917,12 @@ function renderHistoryModal(){
 }
 
 function renderHeader(){
-  const nav = el('div',{class:'week-nav'},[
-    el('button',{onclick:function(){VIEW.weekStart=addDays(VIEW.weekStart,-7); render();}}, '\u2039'),
-    el('div',{class:'label mono'}, fmtWeekLabel(VIEW.weekStart)),
-    el('button',{onclick:function(){VIEW.weekStart=addDays(VIEW.weekStart,7); render();}}, '\u203a'),
+  const nav = el('div',{class:'week-nav-group'},[
+    el('div',{class:'week-nav'},[
+      el('button',{onclick:function(){VIEW.weekStart=addDays(VIEW.weekStart,-7); render();}}, '\u2039'),
+      el('div',{class:'label mono'}, fmtWeekLabel(VIEW.weekStart)),
+      el('button',{onclick:function(){VIEW.weekStart=addDays(VIEW.weekStart,7); render();}}, '\u203a')
+    ]),
     el('button',{class:'today-btn', onclick:function(){VIEW.weekStart=getWeekStart(new Date()); render();}}, 'This Week')
   ]);
   const upload = el('input',{type:'file', id:'csvInput', accept:'.csv', onchange:handleCsvFile});
