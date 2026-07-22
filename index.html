@@ -367,7 +367,14 @@ let authChecked = false; // avoids flashing the login screen before we know the 
 let authError = '';
 let needsPasswordSetup = false; // true right after clicking an invite/recovery link, before they've chosen a password
 
-const DUR = { solo1: 14*60, solo2: 38*60, solo5: 110*60 };
+const DUR = { solo1: 14*60, solo2: 38*60, solo5: 110*60 }; // total trip window in minutes (used for scheduling/conflict/occupancy)
+// Actual hours that count against the 70h/8-day cycle. Solo 2 and Solo 5 blocks have
+// mandatory 10h rest periods built INTO the block itself (work 14h -> rest 10h -> repeat),
+// so only the "work" segments count toward the cycle, not the full block window:
+//   Solo 1: 14h work                                          = 14h
+//   Solo 2: 14h work + 10h rest + 14h work                    = 28h
+//   Solo 5: (14h work + 10h rest) x4 + 14h work                = 70h
+const HOS_CONSUMED_HOURS = { solo1: 14, solo2: 28, solo5: 70 };
 const TRUCK_TYPES = [
   {value:'daycab', label:'Daycab'},
   {value:'sleeper', label:'Sleeper'},
@@ -510,7 +517,6 @@ async function promptInvite(){
     const { data, error } = await sb.functions.invoke('invite-user', { body: { email: trimmed } });
     if(error) throw error;
     if(data && data.error) throw new Error(data.error);
-    logAction('Invited '+trimmed);
     showToast('Invite sent to '+trimmed);
   }catch(e){
     console.error('Invite failed', e);
@@ -1328,7 +1334,7 @@ function driverCycleHours(driverName){
   blocks.forEach(function(b){
     const s = blockStartDT(b), e = blockEndDT(b);
     if(prevEnd && ((s-prevEnd)/3600000) >= HOS_RESET_HOURS) running = 0;
-    running += (DUR[b.type]||0)/60;
+    running += HOS_CONSUMED_HOURS[b.type]||0;
     prevEnd = e;
   });
   return running;
@@ -1375,7 +1381,7 @@ function driverCycleCapViolation(driverName, block){
   chain.forEach(function(b){
     const s = blockStartDT(b), e = blockEndDT(b);
     if(prevEnd && ((s-prevEnd)/3600000) >= HOS_RESET_HOURS) running = 0;
-    running += (DUR[b.type]||0)/60;
+    running += HOS_CONSUMED_HOURS[b.type]||0;
     prevEnd = e;
     if(b.id===block.id && running > HOS_WEEKLY_LIMIT_HOURS) result = running;
   });
