@@ -227,8 +227,9 @@
     background:var(--bg-card); border:1px solid var(--line); border-radius:9px;
     padding:9px 10px; position:relative; border-left:3px solid var(--teal);
   }
-  .card.solo2{ border-left-color: var(--violet); }
-  .card.solo5{ border-left-color: var(--gold); }
+  .card.solo1{ background: rgba(52,195,176,0.08); }
+  .card.solo2{ border-left-color: var(--violet); background: rgba(155,140,255,0.08); }
+  .card.solo5{ border-left-color: var(--gold); background: rgba(242,183,5,0.10); }
   .card.conflict{ border-left-color: var(--red); box-shadow: 0 0 0 1px rgba(239,87,87,0.4); }
   .card .row1{ display:flex; align-items:flex-start; justify-content:space-between; gap:6px; }
   .card .time{ font-family:'Oswald',sans-serif; font-size:16px; font-weight:600; color:var(--amber); letter-spacing:0.02em; }
@@ -1577,7 +1578,7 @@ function renderCard(b){
   const assignedTruckForConflict = b.truckId ? STATE.trucks.find(function(t){ return t.id===b.truckId; }) : null;
   const isDownForConflict = assignedTruckForConflict && assignedTruckForConflict.status==='down';
   const hasConflict = (!b.rejected) && (truckConflict || driverConflict || isDownForConflict);
-  const card = el('div',{class:'card'+(b.type==='solo2'?' solo2':(b.type==='solo5'?' solo5':''))+(hasConflict?' conflict':'')+(b.rejected?' rejected':'')});
+  const card = el('div',{class:'card '+b.type+(hasConflict?' conflict':'')+(b.rejected?' rejected':'')});
 
   const typeBadge = el('span',{class:'typebadge'},
     (function(){ const bt = BLOCK_TYPES.find(function(x){ return x.value===b.type; }) || BLOCK_TYPES[0]; return bt.label+' \u00b7 '+bt.hours+'h'; })());
@@ -1882,7 +1883,8 @@ function renderDriversPage(){
     el('div',{}, [el('b',{},'Cycle hours used'), ' \u2014 the driver\u2019s starting point on the 70h clock, tracked forward automatically (Timeline view) and reset after any 34h+ break.'])
   ]));
 
-  const DOW = ['S','M','T','W','T','F','S'];
+  const DOW = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+  const DOW_FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const table = el('table',{class:'list'});
   table.appendChild(el('tr',{},[
     el('th',{},'Driver'), el('th',{},'Status'), el('th',{},'Domicile'), el('th',{},'Contact'),
@@ -1910,7 +1912,8 @@ function renderDriversPage(){
     DOW.forEach(function(letter, idx){
       const active = d.workDays.indexOf(idx)!==-1;
       daysWrap.appendChild(el('button',{
-        style:'width:22px; height:22px; border-radius:5px; font-size:10px; font-weight:700; cursor:pointer; border:1px solid var(--line); '
+        title: DOW_FULL[idx],
+        style:'width:26px; height:22px; border-radius:5px; font-size:9.5px; font-weight:700; cursor:pointer; border:1px solid var(--line); '
           +(active ? 'background:var(--amber); color:#1a1204; border-color:var(--amber);' : 'background:var(--bg-card); color:var(--text-faint);'),
         onclick:function(){
           if(active) d.workDays = d.workDays.filter(function(x){ return x!==idx; });
