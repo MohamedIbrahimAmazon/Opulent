@@ -148,7 +148,12 @@
     background:var(--bg-card); border:1px solid var(--line); color:var(--text-dim);
     width:26px; height:26px; border-radius:999px; cursor:pointer; font-size:12px;
   }
-  .search-clear:hover{ color:var(--red); border-color:var(--red); }  .stat{ background:var(--bg-panel); border:1px solid var(--line); border-radius:8px; padding:9px 14px; min-width:120px; }
+  .search-clear:hover{ color:var(--red); border-color:var(--red); }
+  .truck-type-filter{
+    background:var(--bg-panel); border:1px solid var(--line); color:var(--text);
+    padding:9px 12px; border-radius:8px; font-size:12px; cursor:pointer;
+  }
+  .stat{ background:var(--bg-panel); border:1px solid var(--line); border-radius:8px; padding:9px 14px; min-width:120px; }
   .stat .n{ font-family:'Oswald',sans-serif; font-size:20px; font-weight:600; }
   .stat .l{ font-size:10.5px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.05em; margin-top:1px;}
   .stat.warn .n{ color:var(--red); }
@@ -360,7 +365,7 @@ let lastKnownUpdatedAt = null; // for optimistic-concurrency check before overwr
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all' };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 let currentUser = null; // { id, email } once signed in, else null
@@ -378,14 +383,24 @@ const DUR = { solo1: 14*60, solo2: 38*60, solo5: 110*60 }; // total trip window 
 const HOS_CONSUMED_HOURS = { solo1: 14, solo2: 28, solo5: 70 };
 const TRUCK_TYPES = [
   {value:'daycab', label:'Daycab'},
-  {value:'sleeper', label:'Sleeper'},
-  {value:'solo5', label:'Solo 5'}
+  {value:'sleeper', label:'Sleeper'}
 ];
 const BLOCK_TYPES = [
   {value:'solo1', label:'SOLO 1', hours:14},
   {value:'solo2', label:'SOLO 2', hours:38},
   {value:'solo5', label:'SOLO 5', hours:110}
 ];
+// Fixed physical compatibility: a daycab has no sleeper berth so it can only run short
+// Solo 1 turns. A sleeper can run Solo 2, and Solo 5 only if that specific truck is
+// flagged as Solo-5-capable (canDoSolo5) -- not every sleeper is assigned to those routes.
+function truckCanRunType(truck, blockType){
+  if(!truck) return false;
+  const vt = truck.vehicleType || 'daycab';
+  if(blockType==='solo1') return vt==='daycab';
+  if(blockType==='solo2') return vt==='sleeper';
+  if(blockType==='solo5') return vt==='sleeper' && !!truck.canDoSolo5;
+  return false;
+}
 function nextBlockType(t){
   const i = BLOCK_TYPES.findIndex(function(x){ return x.value===t; });
   return BLOCK_TYPES[(i+1) % BLOCK_TYPES.length].value;
@@ -574,6 +589,12 @@ async function loadState(){
   if(!STATE.drivers) STATE.drivers=[];
   if(!STATE.blocks) STATE.blocks=[];
   if(!STATE.theme) STATE.theme='dark';
+  // Migration: 'solo5' used to be its own vehicleType; it's now a capability flag on sleepers.
+  STATE.trucks.forEach(function(t){
+    if(t.vehicleType==='solo5'){ t.vehicleType='sleeper'; t.canDoSolo5=true; }
+    if(typeof t.canDoSolo5!=='boolean') t.canDoSolo5=false;
+    if(!Array.isArray(t.tripTimes)) t.tripTimes=[];
+  });
 }
 
 let saveTimer=null;
@@ -651,6 +672,11 @@ function subscribeRealtime(){
       if(!STATE.drivers) STATE.drivers=[];
       if(!STATE.blocks) STATE.blocks=[];
       if(!STATE.theme) STATE.theme='dark';
+      STATE.trucks.forEach(function(t){
+        if(t.vehicleType==='solo5'){ t.vehicleType='sleeper'; t.canDoSolo5=true; }
+        if(typeof t.canDoSolo5!=='boolean') t.canDoSolo5=false;
+        if(!Array.isArray(t.tripTimes)) t.tripTimes=[];
+      });
       render();
     })
     .subscribe(function(status){
@@ -1024,9 +1050,20 @@ function blockMatchesSearch(b){
   return false;
 }
 
+function blockMatchesTruckFilter(b){
+  if(VIEW.truckTypeFilter==='all') return true;
+  if(!b.truckId) return false;
+  const t = STATE.trucks.find(function(x){ return x.id===b.truckId; });
+  if(!t) return false;
+  if(VIEW.truckTypeFilter==='daycab') return t.vehicleType==='daycab';
+  if(VIEW.truckTypeFilter==='sleeper') return t.vehicleType==='sleeper';
+  if(VIEW.truckTypeFilter==='solo5cap') return t.vehicleType==='sleeper' && !!t.canDoSolo5;
+  return true;
+}
+
 function renderSearchBar(){
   const q = VIEW.searchQuery;
-  const matchCount = q.trim() ? currentWeekBlocks().filter(blockMatchesSearch).length : null;
+  const matchCount = q.trim() ? currentWeekBlocks().filter(blockMatchesSearch).filter(blockMatchesTruckFilter).length : null;
   const input = el('input',{id:'searchInput', class:'search-input', placeholder:'\ud83d\udd0d Search driver or truck number (this week)\u2026', value:q,
     oninput:function(e){ VIEW.searchQuery = e.target.value; withFocusPreserved(render); }
   });
@@ -1035,6 +1072,13 @@ function renderSearchBar(){
     wrap.appendChild(el('span',{class:'search-count'}, matchCount+' match'+(matchCount===1?'':'es')));
     wrap.appendChild(el('button',{class:'search-clear', onclick:function(){ VIEW.searchQuery=''; render(); }}, '\u2715'));
   }
+  const typeFilterSel = el('select',{class:'truck-type-filter', onchange:function(e){ VIEW.truckTypeFilter = e.target.value; render(); }},[
+    el('option',{value:'all', selected: VIEW.truckTypeFilter==='all'?'selected':null}, '\ud83d\ude9a All truck types'),
+    el('option',{value:'daycab', selected: VIEW.truckTypeFilter==='daycab'?'selected':null}, 'Daycab only'),
+    el('option',{value:'sleeper', selected: VIEW.truckTypeFilter==='sleeper'?'selected':null}, 'Sleeper only'),
+    el('option',{value:'solo5cap', selected: VIEW.truckTypeFilter==='solo5cap'?'selected':null}, 'Solo 5\u2011capable only')
+  ]);
+  wrap.appendChild(typeFilterSel);
   return wrap;
 }
 
@@ -1202,6 +1246,7 @@ function renderHeader(){
     el('label',{class:'btn primary', for:'csvInput'}, '\u2b06 Upload Trips CSV'),
     upload,
     el('button',{class:'btn primary', title:'Auto-fill drivers on this week\u2019s unassigned blocks, using each driver\u2019s schedule', onclick:function(){ assignDriversAutomatically(); }}, '\ud83e\udd16 Assign Drivers'),
+    el('button',{class:'btn primary', title:'Auto-fill trucks for blocks that have a driver but no truck yet', onclick:function(){ assignTrucksAutomatically(); }}, '\ud83d\ude9a Assign Trucks'),
     el('button',{class:'btn'+(VIEW.mode==='board'?' active-mode':''), onclick:function(){VIEW.mode='board'; render();}}, '\ud83d\udcc5 Board'),
     el('button',{class:'btn'+(VIEW.mode==='timeline'?' active-mode':''), onclick:function(){VIEW.mode='timeline'; render();}}, '\ud83d\udcca Timeline'),
     el('button',{class:'btn'+(VIEW.mode==='drivers'?' active-mode':''), onclick:function(){VIEW.mode='drivers'; render();}}, '\ud83d\udc64 Drivers'),
@@ -1276,6 +1321,60 @@ function assignDriversAutomatically(){
   if(assigned>0) saveState();
   logAction('Auto-assigned drivers: '+assigned+' filled, '+ambiguous+' ambiguous, '+noMatch+' no match, '+hosBlocked+' HOS-blocked');
   showToast('Assigned '+assigned+' driver(s)'+(ambiguous?(' \u2014 '+ambiguous+' had more than one match, left for you'):'')+(hosBlocked?(' \u2014 '+hosBlocked+' blocked by HOS rules (rest/cycle)'):'')+(noMatch?(' \u2014 '+noMatch+' had no matching schedule'):''));
+  render();
+}
+
+// Fills the truck for any block that already has a driver but no truck yet. Tries the
+// driver's preferred truck first; if that's unavailable (down, conflicting, wrong type,
+// or outside its trip times), falls back to any other truck that's physically compatible
+// with the block's Solo type (daycab->Solo1, sleeper->Solo2, sleeper+canDoSolo5->Solo5) --
+// this covers truck-shortage days where the preferred truck simply isn't free.
+function assignTrucksAutomatically(){
+  const candidates = currentWeekBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
+    .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
+  let assignedPreferred=0, assignedFallback=0, noneAvailable=0, noPreferredSet=0;
+
+  function truckUsable(t, b){
+    if(t.status==='down') return false;
+    if(!truckCanRunType(t, b.type)) return false;
+    const times = Array.isArray(t.tripTimes) ? t.tripTimes : [];
+    if(times.length>0 && times.indexOf(b.anchorTime)===-1) return false;
+    if(checkConflict(t.id, Object.assign({}, b, {truckId: t.id}))) return false;
+    return true;
+  }
+
+  candidates.forEach(function(b){
+    const driver = STATE.drivers.find(function(d){ return d.name.trim().toLowerCase()===b.driverName.trim().toLowerCase(); });
+    let usedFallback = false;
+    let chosen = null;
+
+    if(driver && driver.preferredTruckId){
+      const pref = STATE.trucks.find(function(t){ return t.id===driver.preferredTruckId; });
+      if(pref && truckUsable(pref, b)) chosen = pref;
+    } else if(!driver || !driver.preferredTruckId){
+      noPreferredSet++;
+    }
+
+    if(!chosen){
+      const fallbackCandidates = STATE.trucks.filter(function(t){ return truckUsable(t, b); })
+        .sort(function(a,c){ return a.number.localeCompare(c.number); });
+      if(fallbackCandidates.length>0){ chosen = fallbackCandidates[0]; usedFallback = true; }
+    }
+
+    if(chosen){
+      b.truckId = chosen.id;
+      if(usedFallback) assignedFallback++; else assignedPreferred++;
+    } else {
+      noneAvailable++;
+    }
+  });
+
+  if(assignedPreferred+assignedFallback>0) saveState();
+  const total = assignedPreferred+assignedFallback;
+  logAction('Auto-assigned trucks: '+total+' filled ('+assignedPreferred+' preferred, '+assignedFallback+' fallback), '+noneAvailable+' none available');
+  showToast('Assigned '+total+' truck(s)'
+    +(assignedFallback ? (' \u2014 '+assignedFallback+' used a fallback truck (preferred was unavailable)') : '')
+    +(noneAvailable ? (' \u2014 '+noneAvailable+' had no compatible truck free') : ''));
   render();
 }
 
@@ -1527,7 +1626,7 @@ function renderBoard(){
     const date = addDays(VIEW.weekStart, i);
     const iso = fmtISO(date);
     const allDayBlocks = currentWeekBlocks().filter(function(b){ return b.dayIndex===i; });
-    const dayBlocks = allDayBlocks.filter(blockMatchesSearch);
+    const dayBlocks = allDayBlocks.filter(blockMatchesSearch).filter(blockMatchesTruckFilter);
     const activeDayBlocks = allDayBlocks.filter(function(b){ return !b.rejected; });
     const rejectedCount = allDayBlocks.length - activeDayBlocks.length;
     const col = el('div',{class:'day-col'});
@@ -1551,7 +1650,7 @@ function renderBoard(){
     col.appendChild(el('div',{class:'day-head'+(iso===today?' today':'')}, headChildren));
     const body = el('div',{class:'day-body'});
     if(dayBlocks.length===0){
-      body.appendChild(el('div',{class:'day-empty'}, VIEW.searchQuery.trim() ? 'No matches' : 'No blocks'));
+      body.appendChild(el('div',{class:'day-empty'}, (VIEW.searchQuery.trim()||VIEW.truckTypeFilter!=='all') ? 'No matches' : 'No blocks'));
     } else {
       BLOCK_TYPES.forEach(function(bt){
         const group = dayBlocks.filter(function(b){ return b.type===bt.value; })
@@ -1748,7 +1847,7 @@ function addManualBlock(dayIndex, iso){
 
 function renderTrucksModal(){
   const overlay = el('div',{class:'overlay', onclick:function(e){ if(e.target===overlay){ VIEW.showTrucks=false; render(); } }});
-  const modal = el('div',{class:'modal'});
+  const modal = el('div',{class:'modal wide'});
   modal.appendChild(el('div',{class:'modal-head'},[
     el('h2',{}, '\ud83d\ude9a Manage Trucks'),
     el('button',{class:'x', onclick:function(){ VIEW.showTrucks=false; render(); }}, '\u2715')
@@ -1764,7 +1863,7 @@ function renderTrucksModal(){
   addRow.appendChild(el('button',{class:'btn primary', onclick:function(){
     const v = numInput.value.trim();
     if(!v) return;
-    STATE.trucks.push({id: uid('trk'), number: v, status:'active', note:'', vehicleType: typeInput.value});
+    STATE.trucks.push({id: uid('trk'), number: v, status:'active', note:'', vehicleType: typeInput.value, canDoSolo5:false, tripTimes:[]});
     logAction('Added truck '+v+' ('+typeInput.value+')');
     numInput.value='';
     saveState(); render();
@@ -1774,7 +1873,9 @@ function renderTrucksModal(){
   body.appendChild(el('div',{class:'csv-note'}, [
     el('div',{}, [el('b',{},'Active'), ' \u2014 available for assignment, no issues.']),
     el('div',{}, [el('b',{},'Grounded'), ' \u2014 has an issue, but can still be assigned as normal.']),
-    el('div',{}, [el('b',{},'Down'), ' \u2014 cannot be assigned to any block until reactivated.'])
+    el('div',{}, [el('b',{},'Down'), ' \u2014 cannot be assigned to any block until reactivated.']),
+    el('div',{}, [el('b',{},'Compatibility'), ' \u2014 Daycab runs Solo 1 only. Sleeper runs Solo 2, and Solo 5 only if that truck\u2019s "Solo 5" box is checked below. This is fixed and used by "Assign Trucks" automatically.']),
+    el('div',{}, [el('b',{},'Trip Times'), ' \u2014 optional, e.g. "08:00, 14:30". Leave blank to allow any time.'])
   ]));
 
   if(VIEW.selectedTruckIds.length>0){
@@ -1804,15 +1905,31 @@ function renderTrucksModal(){
       VIEW.selectedTruckIds = e.target.checked ? STATE.trucks.map(function(t){ return t.id; }) : [];
       render();
     }})),
-    el('th',{},'Truck'), el('th',{},'Type'), el('th',{},'Status'), el('th',{},'Note'), el('th',{},'')
+    el('th',{},'Truck'), el('th',{},'Type'), el('th',{},'Solo 5'), el('th',{},'Trip Times'), el('th',{},'Status'), el('th',{},'Note'), el('th',{},'')
   ]));
   STATE.trucks.forEach(function(t){
     if(!t.vehicleType) t.vehicleType='daycab';
+    if(typeof t.canDoSolo5!=='boolean') t.canDoSolo5=false;
+    if(!Array.isArray(t.tripTimes)) t.tripTimes=[];
     const noteInput = el('input',{value:t.note||'', placeholder:'Reason, if any', style:'width:100%; background:transparent; border:none; color:var(--text-dim); font-size:12px;',
       oninput:function(e){ t.note = e.target.value; }, onblur:function(){ saveState(); }});
     const typeSel = el('select',{style:'background:var(--bg-card); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:5px 8px; font-size:12px;',
-      onchange:function(e){ const prev=t.vehicleType; t.vehicleType = e.target.value; logAction('Changed truck '+t.number+' type: '+prev+' \u2192 '+t.vehicleType); saveState(); render(); }},
+      onchange:function(e){
+        const prev=t.vehicleType; t.vehicleType = e.target.value;
+        if(t.vehicleType==='daycab') t.canDoSolo5=false; // a daycab has no sleeper berth, can never run Solo 5
+        logAction('Changed truck '+t.number+' type: '+prev+' \u2192 '+t.vehicleType); saveState(); render();
+      }},
       TRUCK_TYPES.map(function(tt){ return el('option',{value:tt.value, selected: t.vehicleType===tt.value?'selected':null}, tt.label); }));
+    const solo5Check = el('input',{type:'checkbox', checked: t.canDoSolo5?'checked':null, disabled: t.vehicleType!=='sleeper'?'disabled':null,
+      title: t.vehicleType!=='sleeper' ? 'Only sleeper trucks can run Solo 5' : 'This truck can run Solo 5 routes',
+      onchange:function(e){ t.canDoSolo5 = e.target.checked; saveState(); render(); }});
+    const timesInput = el('input',{value:t.tripTimes.join(', '), placeholder:'any time', style:'width:110px; background:var(--bg-card); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:5px 7px; font-size:11.5px; font-family:\'JetBrains Mono\',monospace;',
+      onblur:function(e){
+        t.tripTimes = e.target.value.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return /^\d{1,2}:\d{2}$/.test(s); });
+        e.target.value = t.tripTimes.join(', ');
+        saveState();
+      }
+    });
     const statusSel = el('select',{style:'background:var(--bg-card); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:5px 8px; font-size:12px; font-weight:600;',
       onchange:function(e){ const prev=t.status; t.status = e.target.value; logAction('Changed truck '+t.number+' status: '+prev+' \u2192 '+t.status); saveState(); render(); }},[
         el('option',{value:'active', selected: t.status==='active'||!t.status ? 'selected' : null}, '\u2713 Active'),
@@ -1829,6 +1946,8 @@ function renderTrucksModal(){
       el('td',{}, checkbox),
       el('td',{class:'mono'}, t.number),
       el('td',{}, typeSel),
+      el('td',{}, solo5Check),
+      el('td',{}, timesInput),
       el('td',{}, statusSel),
       el('td',{}, noteInput),
       el('td',{}, el('div',{class:'row-actions'},[
