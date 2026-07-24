@@ -367,7 +367,7 @@ let lastKnownUpdatedAt = null; // for optimistic-concurrency check before overwr
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all' };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 let currentUser = null; // { id, email } once signed in, else null
@@ -679,6 +679,7 @@ function subscribeRealtime(){
         if(typeof t.canDoSolo5!=='boolean') t.canDoSolo5=false;
         if(!Array.isArray(t.tripTimes)) t.tripTimes=[];
       });
+      showToast('\ud83d\udd04 Board updated by someone else');
       render();
     })
     .subscribe(function(status){
@@ -929,6 +930,7 @@ function render(){
   if(VIEW.editingCsv) app.appendChild(renderCsvModal());
   if(VIEW.showHistory) app.appendChild(renderHistoryModal());
   if(VIEW.showActivity) app.appendChild(renderActivityModal());
+  if(VIEW.showPdfOptions) app.appendChild(renderPdfOptionsModal());
   ensureDatalist();
   maybeScrollToToday();
 }
@@ -1102,8 +1104,75 @@ function downloadAssignmentPDF(){
     showToast('PDF library failed to load \u2014 check your internet connection and try again', true);
     return;
   }
-  const blocks = currentWeekBlocks().filter(function(b){ return !b.rejected; })
-    .sort(function(a,b){ return (a.dayIndex-b.dayIndex) || (timeToMinutes(a.anchorTime)-timeToMinutes(b.anchorTime)); });
+  VIEW.showPdfOptions = true;
+  render();
+}
+
+function renderPdfOptionsModal(){
+  const [ws, weEnd] = weekWindow(VIEW.weekStart);
+  const defaultFrom = fmtISO(ws);
+  const defaultTo = fmtISO(new Date(weEnd.getTime()-24*60*60000));
+  const overlay = el('div',{class:'overlay', onclick:function(e){ if(e.target===overlay){ VIEW.showPdfOptions=false; render(); } }});
+  const modal = el('div',{class:'modal'});
+  modal.appendChild(el('div',{class:'modal-head'},[
+    el('h2',{}, '\ud83d\udcc4 Download PDF'),
+    el('button',{class:'x', onclick:function(){ VIEW.showPdfOptions=false; render(); }}, '\u2715')
+  ]));
+  const body = el('div',{class:'modal-body'});
+
+  body.appendChild(el('div',{class:'field'},[
+    el('label',{}, 'Date range'),
+    el('div',{style:'display:flex; gap:8px;'},[
+      el('input',{type:'date', id:'pdfFrom', value:defaultFrom}),
+      el('input',{type:'date', id:'pdfTo', value:defaultTo})
+    ])
+  ]));
+
+  const DOW_FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  body.appendChild(el('div',{class:'field'},[
+    el('label',{}, 'Include these weekdays'),
+    el('div',{id:'pdfDaysWrap', style:'display:flex; gap:6px; flex-wrap:wrap;'},
+      DOW_FULL.map(function(name, idx){
+        return el('label',{style:'display:flex; align-items:center; gap:4px; font-size:12px; background:var(--bg-card); border:1px solid var(--line); padding:5px 9px; border-radius:999px; cursor:pointer;'},[
+          el('input',{type:'checkbox', 'data-day':String(idx), checked:'checked'}),
+          name.slice(0,3)
+        ]);
+      })
+    )
+  ]));
+
+  modal.appendChild(body);
+  modal.appendChild(el('div',{class:'modal-foot'},[
+    el('button',{class:'btn', onclick:function(){ VIEW.showPdfOptions=false; render(); }}, 'Cancel'),
+    el('button',{class:'btn primary', onclick:function(){
+      const from = document.getElementById('pdfFrom').value;
+      const to = document.getElementById('pdfTo').value;
+      if(!from || !to){ showToast('Pick a start and end date', true); return; }
+      const checkedDays = Array.prototype.slice.call(document.querySelectorAll('#pdfDaysWrap input:checked'))
+        .map(function(cb){ return parseInt(cb.getAttribute('data-day'),10); });
+      if(checkedDays.length===0){ showToast('Pick at least one weekday', true); return; }
+      generateAssignmentPDF(from, to, checkedDays);
+      VIEW.showPdfOptions = false;
+      render();
+    }}, 'Generate PDF')
+  ]));
+
+  overlay.appendChild(modal);
+  return overlay;
+}
+
+function generateAssignmentPDF(fromISO, toISO, weekdaySet){
+  const blocks = STATE.blocks.filter(function(b){
+    if(b.rejected) return false;
+    if(b.date < fromISO || b.date > toISO) return false;
+    if(weekdaySet.indexOf(b.dayIndex)===-1) return false;
+    return true;
+  }).sort(function(a,b){ return (a.date+a.anchorTime).localeCompare(b.date+b.anchorTime); });
+
+  if(blocks.length===0){
+    showToast('No blocks found in that range \u2014 nothing to export', true);
+    return;
+  }
 
   const rows = blocks.map(function(b){
     const truck = b.truckId ? STATE.trucks.find(function(t){ return t.id===b.truckId; }) : null;
@@ -1125,7 +1194,7 @@ function downloadAssignmentPDF(){
   doc.text('Opulent Transport \u2014 Truck Assignment Sheet', 40, 42);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(10);
-  doc.text('Week of '+fmtWeekLabel(VIEW.weekStart), 40, 60);
+  doc.text(fromISO+' \u2192 '+toISO, 40, 60);
 
   doc.autoTable({
     startY: 76,
@@ -1143,7 +1212,7 @@ function downloadAssignmentPDF(){
     }
   });
 
-  doc.save('truck-assignments-'+fmtISO(VIEW.weekStart)+'.pdf');
+  doc.save('truck-assignments-'+fromISO+'_to_'+toISO+'.pdf');
   showToast('PDF downloaded');
 }
 
