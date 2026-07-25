@@ -1479,13 +1479,60 @@ function assignDriversAutomatically(){
 // or outside its trip times), falls back to any other truck that's physically compatible
 // with the block's Solo type (daycab->Solo1, sleeper->Solo2, sleeper+canDoSolo5->Solo5) --
 // this covers truck-shortage days where the preferred truck simply isn't free.
+// Called whenever a truck's status changes (single edit or bulk apply). If it just went
+// Down or Grounded, every block it's still on for the rest of THIS real-world week gets
+// freed up and, where possible, handed to another compatible active truck automatically.
+// If it just came back Active, run the normal truck auto-fill so it gets picked up again
+// for any driver-having-no-truck blocks under the current rules.
+function onTruckStatusChanged(truck, prevStatus, newStatus){
+  const becameUnusable = (newStatus==='down' || newStatus==='grounded') && prevStatus==='active';
+  const becameActive = newStatus==='active' && (prevStatus==='down' || prevStatus==='grounded');
+
+  if(becameUnusable){
+    reassignBlocksOffTruck(truck);
+  } else if(becameActive){
+    assignTrucksAutomatically();
+  }
+}
+
+function reassignBlocksOffTruck(truck){
+  const todayISO = fmtISO(toDateOnly(new Date()));
+  const [rwStart, rwEnd] = weekWindow(getWeekStart(new Date()));
+  const weekEndISO = fmtISO(new Date(rwEnd.getTime()-24*60*60000));
+
+  const affected = STATE.blocks.filter(function(b){
+    return !b.rejected && b.truckId===truck.id && b.date>=todayISO && b.date<=weekEndISO;
+  }).sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
+
+  if(affected.length===0) return;
+
+  let reassigned=0, freed=0;
+  affected.forEach(function(b){
+    b.truckId = null;
+    const candidates = STATE.trucks.filter(function(t2){
+      if(t2.id===truck.id) return false;
+      if(t2.status!=='active') return false;
+      if(!truckCanRunType(t2, b.type)) return false;
+      const times = Array.isArray(t2.tripTimes) ? t2.tripTimes : [];
+      if(times.length>0 && times.indexOf(b.anchorTime)===-1) return false;
+      if(checkConflict(t2.id, Object.assign({}, b, {truckId: t2.id}))) return false;
+      return true;
+    }).sort(function(a,c){ return a.number.localeCompare(c.number); });
+    if(candidates.length>0){ b.truckId = candidates[0].id; reassigned++; }
+    else freed++;
+  });
+
+  logAction('Truck '+truck.number+' \u2192 '+truck.status+': reassigned '+reassigned+' block(s), '+freed+' left needing a truck');
+  showToast('Truck '+truck.number+' is now '+truck.status+' \u2014 '+reassigned+' block(s) moved to another truck'+(freed?(', '+freed+' still need one'):''));
+}
+
 function assignTrucksAutomatically(){
   const candidates = currentWeekBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
     .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
   let assignedPreferred=0, assignedFallback=0, noneAvailable=0, noPreferredSet=0;
 
   function truckUsable(t, b){
-    if(t.status==='down') return false;
+    if(t.status!=='active') return false;
     if(!truckCanRunType(t, b.type)) return false;
     const times = Array.isArray(t.tripTimes) ? t.tripTimes : [];
     if(times.length>0 && times.indexOf(b.anchorTime)===-1) return false;
@@ -1933,8 +1980,8 @@ function renderCard(b){
   });
   truckSel.appendChild(el('option',{value:''}, '\u2014 Select truck \u2014'));
   const activeTrucks = STATE.trucks.filter(function(t){
-    if(t.id===b.truckId) return true; // always show the currently assigned truck, even if down/busy, so it stays visible/reassignable
-    if(t.status==='down') return false;
+    if(t.id===b.truckId) return true; // always show the currently assigned truck, even if down/grounded/busy, so it stays visible/reassignable
+    if(t.status!=='active') return false;
     return truckIsFreeFor(t.id, b);
   });
   activeTrucks.forEach(function(t){
@@ -2022,7 +2069,7 @@ function renderTrucksModal(){
 
   body.appendChild(el('div',{class:'csv-note'}, [
     el('div',{}, [el('b',{},'Active'), ' \u2014 available for assignment, no issues.']),
-    el('div',{}, [el('b',{},'Grounded'), ' \u2014 has an issue, but can still be assigned as normal.']),
+    el('div',{}, [el('b',{},'Grounded'), ' \u2014 treated like Down for assignment: existing blocks get moved to another active truck automatically, and it won\u2019t be picked for new ones until set back to Active.']),
     el('div',{}, [el('b',{},'Down'), ' \u2014 cannot be assigned to any block until reactivated.']),
     el('div',{}, [el('b',{},'Compatibility'), ' \u2014 Daycab runs Solo 1 only. Sleeper runs Solo 2, and Solo 5 only if that truck\u2019s "Solo 5" box is checked below. This is fixed and used by "Assign Trucks" automatically.']),
     el('div',{}, [el('b',{},'Trip Times'), ' \u2014 optional, e.g. "08:00, 14:30". Leave blank to allow any time.'])
@@ -2039,10 +2086,14 @@ function renderTrucksModal(){
     bulkBar.appendChild(bulkSel);
     bulkBar.appendChild(el('button',{class:'btn small primary', onclick:function(){
       const newStatus = document.getElementById('bulkStatusSel').value;
-      const nums = STATE.trucks.filter(function(t){ return VIEW.selectedTruckIds.indexOf(t.id)!==-1; }).map(function(t){ return t.number; });
-      STATE.trucks.forEach(function(t){ if(VIEW.selectedTruckIds.indexOf(t.id)!==-1) t.status = newStatus; });
+      const affectedTrucks = STATE.trucks.filter(function(t){ return VIEW.selectedTruckIds.indexOf(t.id)!==-1; });
+      const nums = affectedTrucks.map(function(t){ return t.number; });
+      const prevStatuses = {};
+      affectedTrucks.forEach(function(t){ prevStatuses[t.id] = t.status; t.status = newStatus; });
       logAction('Bulk set status "'+newStatus+'" on trucks: '+nums.join(', '));
-      saveState(); render();
+      saveState();
+      affectedTrucks.forEach(function(t){ onTruckStatusChanged(t, prevStatuses[t.id], newStatus); });
+      render();
     }}, 'Apply to selected'));
     bulkBar.appendChild(el('button',{class:'btn small', onclick:function(){ VIEW.selectedTruckIds=[]; render(); }}, 'Clear selection'));
     body.appendChild(bulkBar);
@@ -2081,7 +2132,13 @@ function renderTrucksModal(){
       }
     });
     const statusSel = el('select',{style:'background:var(--bg-card); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:5px 8px; font-size:12px; font-weight:600;',
-      onchange:function(e){ const prev=t.status; t.status = e.target.value; logAction('Changed truck '+t.number+' status: '+prev+' \u2192 '+t.status); saveState(); render(); }},[
+      onchange:function(e){
+        const prev=t.status; t.status = e.target.value;
+        logAction('Changed truck '+t.number+' status: '+prev+' \u2192 '+t.status);
+        saveState();
+        onTruckStatusChanged(t, prev, t.status);
+        render();
+      }},[
         el('option',{value:'active', selected: t.status==='active'||!t.status ? 'selected' : null}, '\u2713 Active'),
         el('option',{value:'grounded', selected: t.status==='grounded' ? 'selected' : null}, '\u26a0 Grounded'),
         el('option',{value:'down', selected: t.status==='down' ? 'selected' : null}, '\u26d4 Down')
