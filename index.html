@@ -217,6 +217,12 @@
   .day-count{ font-size:10.5px; color:var(--text-dim); margin-top:4px; font-weight:500; }
   .day-head.today{ box-shadow: inset 0 -2px 0 var(--amber); }
   .day-shortage{ font-size:10.5px; font-weight:700; color:var(--red); margin-top:6px; }
+  .day-col.shortage-col{ border-color: var(--red); box-shadow: 0 0 0 1px rgba(239,87,87,0.5); }
+  .day-head.shortage-head{ background: rgba(239,87,87,0.16); box-shadow: inset 0 -2px 0 var(--red); animation: shortage-pulse 2s ease-in-out infinite; }
+  @keyframes shortage-pulse{
+    0%, 100% { background: rgba(239,87,87,0.16); }
+    50% { background: rgba(239,87,87,0.30); }
+  }
   .day-spare{ font-size:10px; color:var(--text-faint); margin-top:3px; line-height:1.4; }
   .day-body{ padding:8px; display:flex; flex-direction:column; gap:8px; min-height:60px; }
   .day-empty{ color:var(--text-faint); font-size:11.5px; text-align:center; padding:14px 4px; }
@@ -1405,10 +1411,24 @@ function currentWeekBlocks(){
 // schedule template (work days + trip times + allowed Solo types). Only fills blocks that
 // have no driver yet -- never overwrites a driver name that's already there (e.g. from the
 // CSV itself). Skips ambiguous matches (more than one candidate) rather than guessing.
+// Sum of HOS-consumed hours (not full block windows) for a driver's active blocks in the
+// currently viewed week only -- used as a simple, explicit "never exceed 70h in this
+// calendar week" guard for auto-assignment, on top of the rolling 8-day cycle cap.
+function driverWeeklyConsumedHours(driverName){
+  const norm = driverName.trim().toLowerCase();
+  return currentWeekBlocks()
+    .filter(function(b){ return !b.rejected && (b.driverName||'').trim().toLowerCase()===norm; })
+    .reduce(function(sum, b){ return sum + (HOS_CONSUMED_HOURS[b.type]||0); }, 0);
+}
+
+// Auto-fills drivers onto this week's driver-less blocks using each driver's schedule
+// template. When more than one driver could take a block, priority goes to whoever has
+// FEWER work days set (they have fewer slots overall, so give them first pick before more
+// flexible drivers who could just as easily fill a different day instead).
 function assignDriversAutomatically(){
   const candidates = currentWeekBlocks().filter(function(b){ return !b.rejected && !b.driverName; })
     .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); }); // chronological, so HOS accumulation makes sense as we go
-  let assigned=0, ambiguous=0, noMatch=0, hosBlocked=0;
+  let assigned=0, noMatch=0, hosBlocked=0;
   candidates.forEach(function(b){
     const matches = STATE.drivers.filter(function(d){
       const days = Array.isArray(d.workDays) ? d.workDays : [];
@@ -1419,15 +1439,25 @@ function assignDriversAutomatically(){
       if(times.length>0 && times.indexOf(b.anchorTime)===-1) return false;
       // Must actually be free at this time (no overlapping block already on them).
       if(checkDriverConflict(d.name, Object.assign({}, b, {driverName: d.name}))) return false;
-      // Must not break the 10h rest rule or the 70h/8-day cycle cap.
+      // Must not break the 10h rest rule or the 70h/8-day rolling cycle cap.
       if(driverHOSViolation(d.name, Object.assign({}, b, {driverName: d.name}))) return false;
+      // Explicit simple guard: never exceed 70h of actual work within this calendar week.
+      if(driverWeeklyConsumedHours(d.name) + (HOS_CONSUMED_HOURS[b.type]||0) > HOS_WEEKLY_LIMIT_HOURS) return false;
       return true;
     });
-    if(matches.length===1){
+    if(matches.length>0){
+      // Most-constrained driver first: fewest work days wins, ties broken alphabetically
+      // for a stable, predictable result.
+      matches.sort(function(a,c){
+        const aDays = Array.isArray(a.workDays) ? a.workDays.length : 7;
+        const cDays = Array.isArray(c.workDays) ? c.workDays.length : 7;
+        if(aDays !== cDays) return aDays - cDays;
+        return a.name.localeCompare(c.name);
+      });
       b.driverName = matches[0].name;
       assigned++;
-    } else if(matches.length===0){
-      // Distinguish "no schedule matched at all" from "matched a schedule but HOS blocked it"
+    } else {
+      // Distinguish "no schedule matched at all" from "matched a schedule but HOS/weekly cap blocked it"
       const scheduleMatches = STATE.drivers.filter(function(d){
         const days = Array.isArray(d.workDays) ? d.workDays : [];
         const times = Array.isArray(d.tripTimes) ? d.tripTimes : [];
@@ -1436,13 +1466,11 @@ function assignDriversAutomatically(){
       });
       if(scheduleMatches.length>0) hosBlocked++;
       else noMatch++;
-    } else {
-      ambiguous++;
     }
   });
   if(assigned>0) saveState();
-  logAction('Auto-assigned drivers: '+assigned+' filled, '+ambiguous+' ambiguous, '+noMatch+' no match, '+hosBlocked+' HOS-blocked');
-  showToast('Assigned '+assigned+' driver(s)'+(ambiguous?(' \u2014 '+ambiguous+' had more than one match, left for you'):'')+(hosBlocked?(' \u2014 '+hosBlocked+' blocked by HOS rules (rest/cycle)'):'')+(noMatch?(' \u2014 '+noMatch+' had no matching schedule'):''));
+  logAction('Auto-assigned drivers: '+assigned+' filled, '+noMatch+' no match, '+hosBlocked+' HOS/70h-blocked');
+  showToast('Assigned '+assigned+' driver(s)'+(hosBlocked?(' \u2014 '+hosBlocked+' blocked by HOS/70h rules'):'')+(noMatch?(' \u2014 '+noMatch+' had no matching schedule'):''));
   render();
 }
 
@@ -1751,9 +1779,9 @@ function renderBoard(){
     const dayBlocks = allDayBlocks.filter(blockMatchesSearch).filter(blockMatchesTruckFilter);
     const activeDayBlocks = allDayBlocks.filter(function(b){ return !b.rejected; });
     const rejectedCount = allDayBlocks.length - activeDayBlocks.length;
-    const col = el('div',{class:'day-col'});
     const shortage = truckShortageForDay(date);
     const spare = spareTrucksForDay(date);
+    const col = el('div',{class:'day-col'+(shortage>0?' shortage-col':'')});
     const typeCountsLabel = BLOCK_TYPES.map(function(bt){
       const n = activeDayBlocks.filter(function(b){ return b.type===bt.value; }).length;
       return bt.label+' '+n;
@@ -1769,7 +1797,7 @@ function renderBoard(){
     headChildren.push(el('div',{class:'day-spare'},
       spare.length ? ('Spare ('+spare.length+'): '+spare.map(function(t){ return t.number; }).join(', ')) : 'Spare: none'
     ));
-    col.appendChild(el('div',{class:'day-head'+(iso===today?' today':'')}, headChildren));
+    col.appendChild(el('div',{class:'day-head'+(iso===today?' today':'')+(shortage>0?' shortage-head':'')}, headChildren));
     const body = el('div',{class:'day-body'});
     if(dayBlocks.length===0){
       body.appendChild(el('div',{class:'day-empty'}, (VIEW.searchQuery.trim()||VIEW.truckTypeFilter!=='all') ? 'No matches' : 'No blocks'));
