@@ -370,6 +370,7 @@ const ADMIN_EMAIL = 'mohamed.abdulhafez1@gmail.com'; // only this account sees I
 function isAdmin(){ return !!(currentUser && currentUser.email && currentUser.email.toLowerCase()===ADMIN_EMAIL.toLowerCase()); }
 let suppressRealtime = false; // avoids re-rendering off our own write
 let lastKnownUpdatedAt = null; // for optimistic-concurrency check before overwriting
+let lastKnownUpdatedBy = null; // which account made the last save -- only warn about "someone else" if this differs
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
@@ -571,16 +572,18 @@ async function fetchActivityLog(){
 async function loadState(){
   if(sb){
     try{
-      const { data, error } = await sb.from('board_state').select('data, updated_at').eq('id', BOARD_ROW_ID).maybeSingle();
+      const { data, error } = await sb.from('board_state').select('data, updated_at, updated_by').eq('id', BOARD_ROW_ID).maybeSingle();
       if(error) throw error;
       if(data && data.data){
         STATE = data.data;
         lastKnownUpdatedAt = data.updated_at || null;
+        lastKnownUpdatedBy = data.updated_by || null;
       } else {
         // First run ever: seed the shared row so everyone starts from the same place.
         const nowIso = new Date().toISOString();
-        await sb.from('board_state').upsert({ id: BOARD_ROW_ID, data: STATE, updated_at: nowIso });
+        await sb.from('board_state').upsert({ id: BOARD_ROW_ID, data: STATE, updated_at: nowIso, updated_by: currentUser ? currentUser.email : null });
         lastKnownUpdatedAt = nowIso;
+        lastKnownUpdatedBy = currentUser ? currentUser.email : null;
       }
     }catch(e){
       console.error('Supabase load failed, check SUPABASE_URL/SUPABASE_ANON_KEY and RLS policy.', e);
@@ -612,25 +615,26 @@ function saveState(opts){
   saveTimer = setTimeout(async ()=>{
     if(sb){
       try{
-        // Optimistic-concurrency check: if someone else saved since we last loaded/saved,
-        // don't silently clobber their change -- warn and let the person reload first.
-        // Compare as actual points in time, not raw strings -- Postgres and JS format
-        // ISO timestamps slightly differently (precision/offset notation), so a naive
-        // string compare would false-positive on every save, even our own.
+        // Optimistic-concurrency check: only warn if the last save was made by a DIFFERENT
+        // account than the one currently signed in. Comparing by account (not just timing)
+        // means the same person doing several quick edits in a row never trips this warning
+        // -- it only fires when it's genuinely someone else's change.
         if(!opts.force){
-          const { data: current, error: checkErr } = await sb.from('board_state').select('updated_at').eq('id', BOARD_ROW_ID).maybeSingle();
-          const currentTime = current && current.updated_at ? new Date(current.updated_at).getTime() : null;
-          const knownTime = lastKnownUpdatedAt ? new Date(lastKnownUpdatedAt).getTime() : null;
-          if(!checkErr && currentTime && knownTime && Math.abs(currentTime - knownTime) > 1000){
+          const { data: current, error: checkErr } = await sb.from('board_state').select('updated_at, updated_by').eq('id', BOARD_ROW_ID).maybeSingle();
+          const currentBy = current ? (current.updated_by || null) : null;
+          const isDifferentAccount = currentBy && currentUser && currentBy.toLowerCase() !== currentUser.email.toLowerCase();
+          if(!checkErr && isDifferentAccount){
             showConflictWarning();
             return;
           }
         }
         suppressRealtime = true;
         const nowIso = new Date().toISOString();
-        const { error } = await sb.from('board_state').upsert({ id: BOARD_ROW_ID, data: STATE, updated_at: nowIso });
+        const myEmail = currentUser ? currentUser.email : null;
+        const { error } = await sb.from('board_state').upsert({ id: BOARD_ROW_ID, data: STATE, updated_at: nowIso, updated_by: myEmail });
         if(error) throw error;
         lastKnownUpdatedAt = nowIso;
+        lastKnownUpdatedBy = myEmail;
         // Best-effort snapshot for the version history / safety net. Never blocks the main save.
         maybeSnapshot();
       }catch(e){
@@ -676,6 +680,7 @@ function subscribeRealtime(){
       if(!incoming) return;
       STATE = incoming;
       lastKnownUpdatedAt = (payload.new && payload.new.updated_at) || lastKnownUpdatedAt;
+      lastKnownUpdatedBy = (payload.new && payload.new.updated_by) || lastKnownUpdatedBy;
       if(!STATE.trucks) STATE.trucks=[];
       if(!STATE.drivers) STATE.drivers=[];
       if(!STATE.blocks) STATE.blocks=[];
@@ -2549,6 +2554,37 @@ function ensureDatalist(){
   dl.innerHTML='';
   STATE.drivers.forEach(function(d){ dl.appendChild(el('option',{value:d.name})); });
 }
+
+function closeAnyOpenModal(){
+  let closed = false;
+  if(VIEW.showTrucks){ VIEW.showTrucks=false; closed=true; }
+  if(VIEW.editingCsv){ VIEW.editingCsv=null; closed=true; }
+  if(VIEW.showHistory){ VIEW.showHistory=false; closed=true; }
+  if(VIEW.showActivity){ VIEW.showActivity=false; closed=true; }
+  if(VIEW.showPdfOptions){ VIEW.showPdfOptions=false; closed=true; }
+  if(closed) render();
+  return closed;
+}
+
+function focusSearchBox(){
+  if(VIEW.mode!=='board'){ VIEW.mode='board'; render(); }
+  setTimeout(function(){
+    const el2 = document.getElementById('searchInput');
+    if(el2){ el2.focus(); el2.select(); }
+  }, 30);
+}
+
+document.addEventListener('keydown', function(e){
+  if(e.key==='Escape'){
+    closeAnyOpenModal();
+    return;
+  }
+  const isFindShortcut = (e.ctrlKey || e.metaKey) && (e.key==='f' || e.key==='F');
+  if(isFindShortcut){
+    e.preventDefault();
+    focusSearchBox();
+  }
+});
 
 (async function init(){
   VIEW.weekStart = getWeekStart(new Date());
