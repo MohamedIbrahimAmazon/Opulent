@@ -103,6 +103,10 @@
   .today-btn:hover{ background:var(--bg-card-hover); border-color:var(--amber-dim); }
 
   .actions{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .actions-row{ display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+  .danger-zone{ display:flex; align-items:center; padding-left:16px; margin-left:2px; border-left:1px solid var(--line); }
+  .danger-zone .btn{ color:var(--red); border-color:rgba(255,90,90,0.35); }
+  .danger-zone .btn:hover{ background:rgba(255,90,90,0.08); border-color:var(--red); }
   .btn{
     display:inline-flex; align-items:center; gap:6px;
     background:var(--bg-card); border:1px solid var(--line); color:var(--text);
@@ -390,7 +394,7 @@ let lastKnownUpdatedBy = null; // which account made the last save -- only warn 
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [] };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name' };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 let currentUser = null; // { id, email } once signed in, else null
@@ -694,9 +698,21 @@ function subscribeRealtime(){
       if(suppressRealtime) return;
       const incoming = payload.new && payload.new.data;
       if(!incoming) return;
+      const incomingBy = (payload.new && payload.new.updated_by) || null;
+      // This event can be the realtime echo of our OWN save arriving back after a network
+      // round-trip. Comparing by account (not timing) means it's never mistaken for someone
+      // else's change: only overwrite STATE and warn when the save truly came from a
+      // different signed-in account. Skipping our own echo also avoids an unnecessary
+      // full re-render (and the scroll-to-top that comes with it) after every save.
+      const isOwnEcho = incomingBy && currentUser && incomingBy.toLowerCase()===currentUser.email.toLowerCase();
+      if(isOwnEcho){
+        lastKnownUpdatedAt = (payload.new && payload.new.updated_at) || lastKnownUpdatedAt;
+        lastKnownUpdatedBy = incomingBy;
+        return;
+      }
       STATE = incoming;
       lastKnownUpdatedAt = (payload.new && payload.new.updated_at) || lastKnownUpdatedAt;
-      lastKnownUpdatedBy = (payload.new && payload.new.updated_by) || lastKnownUpdatedBy;
+      lastKnownUpdatedBy = incomingBy || lastKnownUpdatedBy;
       if(!STATE.trucks) STATE.trucks=[];
       if(!STATE.drivers) STATE.drivers=[];
       if(!STATE.blocks) STATE.blocks=[];
@@ -927,7 +943,7 @@ function applyTheme(){
   document.body.className = localTheme==='light' ? 'light' : '';
 }
 
-function render(){
+function renderInner(){
   applyTheme();
   const app = document.getElementById('app');
   app.innerHTML='';
@@ -962,6 +978,23 @@ function render(){
   if(VIEW.showPdfOptions) app.appendChild(renderPdfOptionsModal());
   ensureDatalist();
   maybeScrollToToday();
+}
+
+// Every render() rebuilds the whole DOM tree from scratch, which would otherwise reset
+// scroll position on both the page and any open modal. This wrapper snapshots and restores
+// window scroll + the open modal's internal scroll (and focus/cursor, via
+// withFocusPreserved) around every render, so typing into a field or a background update
+// never jumps you back to the top.
+function render(){
+  const winY = window.scrollY;
+  const modalBodyBefore = document.querySelector('.modal-body');
+  const modalY = modalBodyBefore ? modalBodyBefore.scrollTop : null;
+  withFocusPreserved(renderInner);
+  if(winY) window.scrollTo(0, winY);
+  if(modalY!=null){
+    const modalBodyAfter = document.querySelector('.modal-body');
+    if(modalBodyAfter) modalBodyAfter.scrollTop = modalY;
+  }
 }
 
 function renderSetPasswordScreen(){
@@ -1098,7 +1131,7 @@ function renderSearchBar(){
   const q = VIEW.searchQuery;
   const matchCount = q.trim() ? currentWeekBlocks().filter(blockMatchesSearch).filter(blockMatchesTruckFilter).length : null;
   const input = el('input',{id:'searchInput', class:'search-input', placeholder:'\ud83d\udd0d Search driver or truck number (this week)\u2026', value:q,
-    oninput:function(e){ VIEW.searchQuery = e.target.value; withFocusPreserved(render); }
+    oninput:function(e){ VIEW.searchQuery = e.target.value; render(); }
   });
   const wrap = el('div',{class:'search-bar'}, [input]);
   if(q.trim()){
@@ -1414,7 +1447,6 @@ function renderHeader(){
     el('button',{class:'btn'+(VIEW.mode==='timeline'?' active-mode':''), onclick:function(){VIEW.mode='timeline'; render();}}, '\ud83d\udcca Timeline'),
     el('button',{class:'btn'+(VIEW.mode==='drivers'?' active-mode':''), onclick:function(){VIEW.mode='drivers'; render();}}, '\ud83d\udc64 Drivers'),
     el('button',{class:'btn', onclick:function(){VIEW.showTrucks=true; render();}}, '\ud83d\ude9a Trucks'),
-    isAdmin() ? el('button',{class:'btn', style:'color:var(--red);', title:'Delete every block in the currently viewed week (trucks and drivers are untouched)', onclick:function(){ clearCurrentWeek(); }}, '\ud83e\uddf9 Clear This Week') : null,
     el('button',{class:'btn', title:'View and restore previous saved versions', onclick:function(){ openHistory(); }}, '\ud83d\udd50 History'),
     isAdmin() ? el('button',{class:'btn', title:'See who did what, and when', onclick:function(){ openActivityLog(); }}, '\ud83d\udcdd Activity') : null,
     isAdmin() ? el('button',{class:'btn', title:'Invite a new person by email', onclick:function(){ promptInvite(); }}, '\u2795 Invite') : null,
@@ -1426,6 +1458,9 @@ function renderHeader(){
     renderUserBadge(),
     themeBtn
   ]);
+  const dangerZone = isAdmin() ? el('div',{class:'danger-zone'},[
+    el('button',{class:'btn', title:'Delete every block in the currently viewed week (trucks and drivers are untouched)', onclick:function(){ clearCurrentWeek(); }}, '\ud83e\uddf9 Clear This Week')
+  ]) : null;
   return el('header',{class:'top'},[
     el('div',{class:'brand'},[
       el('div',{class:'mark'}, el('img',{src:LOGO_DATA_URI, alt:'Opulent Transport logo'})),
@@ -1435,7 +1470,7 @@ function renderHeader(){
       ])
     ]),
     nav,
-    actions
+    el('div',{class:'actions-row'}, [actions, dangerZone])
   ]);
 }
 
@@ -2182,6 +2217,42 @@ function renderTrucksModal(){
     el('div',{}, [el('b',{},'Trip Times'), ' \u2014 optional, e.g. "08:00, 14:30". Leave blank to allow any time.'])
   ]));
 
+  const searchSortRow = el('div',{style:'display:flex; gap:10px; align-items:center; margin-bottom:12px; flex-wrap:wrap;'});
+  const truckSearchInput = el('input',{id:'truckSearchInput', value:VIEW.truckSearchQuery, placeholder:'\ud83d\udd0d Search truck number or note\u2026',
+    style:'flex:1; min-width:180px; background:var(--bg-card); border:1px solid var(--line); color:var(--text); padding:9px 10px; border-radius:8px; font-size:13px;',
+    oninput:function(e){ VIEW.truckSearchQuery = e.target.value; render(); }
+  });
+  searchSortRow.appendChild(truckSearchInput);
+  searchSortRow.appendChild(el('select',{style:'background:var(--bg-card); border:1px solid var(--line); color:var(--text); padding:9px 10px; border-radius:8px; font-size:13px;',
+    onchange:function(e){ VIEW.truckSort = e.target.value; render(); }},[
+    el('option',{value:'number', selected: VIEW.truckSort==='number'?'selected':null}, 'Sort: Truck number'),
+    el('option',{value:'type', selected: VIEW.truckSort==='type'?'selected':null}, 'Sort: Type'),
+    el('option',{value:'status', selected: VIEW.truckSort==='status'?'selected':null}, 'Sort: Status'),
+    el('option',{value:'newest', selected: VIEW.truckSort==='newest'?'selected':null}, 'Sort: Newest first')
+  ]));
+  body.appendChild(searchSortRow);
+
+  const truckSearchQ = VIEW.truckSearchQuery.trim().toLowerCase();
+  let visibleTrucks = STATE.trucks.filter(function(t){
+    if(!truckSearchQ) return true;
+    return (t.number||'').toLowerCase().indexOf(truckSearchQ)!==-1 || (t.note||'').toLowerCase().indexOf(truckSearchQ)!==-1;
+  });
+  if(VIEW.truckSort==='newest'){
+    visibleTrucks = visibleTrucks.slice().reverse();
+  } else {
+    const statusOrder = {active:0, grounded:1, down:2};
+    visibleTrucks = visibleTrucks.slice().sort(function(a,b){
+      if(VIEW.truckSort==='type'){
+        const byType = (a.vehicleType||'').localeCompare(b.vehicleType||'');
+        if(byType) return byType;
+      } else if(VIEW.truckSort==='status'){
+        const byStatus = (statusOrder[a.status||'active']||0) - (statusOrder[b.status||'active']||0);
+        if(byStatus) return byStatus;
+      }
+      return a.number.localeCompare(b.number, undefined, {numeric:true});
+    });
+  }
+
   if(VIEW.selectedTruckIds.length>0){
     const bulkBar = el('div',{style:'display:flex; align-items:center; gap:8px; background:var(--bg-card); border:1px solid var(--amber-dim); border-radius:8px; padding:8px 12px; margin-bottom:12px;'});
     bulkBar.appendChild(el('span',{style:'font-size:12px; color:var(--text-dim);'}, VIEW.selectedTruckIds.length+' selected'));
@@ -2206,16 +2277,21 @@ function renderTrucksModal(){
     body.appendChild(bulkBar);
   }
 
-  const allSelected = STATE.trucks.length>0 && VIEW.selectedTruckIds.length===STATE.trucks.length;
+  const allSelected = visibleTrucks.length>0 && visibleTrucks.every(function(t){ return VIEW.selectedTruckIds.indexOf(t.id)!==-1; });
   const table = el('table',{class:'list'});
   table.appendChild(el('tr',{},[
-    el('th',{}, el('input',{type:'checkbox', checked: allSelected?'checked':null, onchange:function(e){
-      VIEW.selectedTruckIds = e.target.checked ? STATE.trucks.map(function(t){ return t.id; }) : [];
+    el('th',{}, el('input',{type:'checkbox', checked: allSelected?'checked':null, title:'Select all visible', onchange:function(e){
+      if(e.target.checked){
+        visibleTrucks.forEach(function(t){ if(VIEW.selectedTruckIds.indexOf(t.id)===-1) VIEW.selectedTruckIds.push(t.id); });
+      } else {
+        const visibleIds = visibleTrucks.map(function(t){ return t.id; });
+        VIEW.selectedTruckIds = VIEW.selectedTruckIds.filter(function(id){ return visibleIds.indexOf(id)===-1; });
+      }
       render();
     }})),
     el('th',{},'Truck'), el('th',{},'Type'), el('th',{},'Solo 5'), el('th',{},'Trip Times'), el('th',{},'Status'), el('th',{},'Note'), el('th',{},'')
   ]));
-  STATE.trucks.forEach(function(t){
+  visibleTrucks.forEach(function(t){
     if(!t.vehicleType) t.vehicleType='daycab';
     if(typeof t.canDoSolo5!=='boolean') t.canDoSolo5=false;
     if(!Array.isArray(t.tripTimes)) t.tripTimes=[];
@@ -2278,6 +2354,8 @@ function renderTrucksModal(){
   });
   if(STATE.trucks.length===0){
     body.appendChild(el('div',{class:'empty-state'},[el('div',{class:'big'},'No trucks yet'), 'Add a truck number above to get started']));
+  } else if(visibleTrucks.length===0){
+    body.appendChild(el('div',{class:'empty-state'},[el('div',{class:'big'},'No matches'), 'No trucks match "'+VIEW.truckSearchQuery+'"']));
   } else {
     body.appendChild(table);
   }
@@ -2316,6 +2394,43 @@ function renderDriversPage(){
     el('div',{}, [el('b',{},'Cycle hours used'), ' \u2014 the driver\u2019s starting point on the 70h clock, tracked forward automatically (Timeline view) and reset after any 34h+ break.'])
   ]));
 
+  const driverSearchSortRow = el('div',{style:'display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap;'});
+  const driverSearchInput = el('input',{id:'driverSearchInput', value:VIEW.driverSearchQuery, placeholder:'\ud83d\udd0d Search driver, domicile, email or phone\u2026',
+    style:'flex:1; min-width:200px; background:var(--bg-card); border:1px solid var(--line); color:var(--text); padding:9px 10px; border-radius:8px; font-size:13px;',
+    oninput:function(e){ VIEW.driverSearchQuery = e.target.value; render(); }
+  });
+  driverSearchSortRow.appendChild(driverSearchInput);
+  driverSearchSortRow.appendChild(el('select',{style:'background:var(--bg-card); border:1px solid var(--line); color:var(--text); padding:9px 10px; border-radius:8px; font-size:13px;',
+    onchange:function(e){ VIEW.driverSort = e.target.value; render(); }},[
+    el('option',{value:'name', selected: VIEW.driverSort==='name'?'selected':null}, 'Sort: Name'),
+    el('option',{value:'status', selected: VIEW.driverSort==='status'?'selected':null}, 'Sort: Status'),
+    el('option',{value:'domicile', selected: VIEW.driverSort==='domicile'?'selected':null}, 'Sort: Domicile'),
+    el('option',{value:'cycle', selected: VIEW.driverSort==='cycle'?'selected':null}, 'Sort: Cycle hours (high\u2192low)')
+  ]));
+  page.appendChild(driverSearchSortRow);
+
+  const driverSearchQ = VIEW.driverSearchQuery.trim().toLowerCase();
+  let visibleDrivers = STATE.drivers.filter(function(d){
+    if(!driverSearchQ) return true;
+    return (d.name||'').toLowerCase().indexOf(driverSearchQ)!==-1
+      || (d.domicile||'').toLowerCase().indexOf(driverSearchQ)!==-1
+      || (d.email||'').toLowerCase().indexOf(driverSearchQ)!==-1
+      || (d.phone||'').toLowerCase().indexOf(driverSearchQ)!==-1;
+  });
+  visibleDrivers = visibleDrivers.slice().sort(function(a,b){
+    if(VIEW.driverSort==='status'){
+      const byStatus = (b.active?1:0) - (a.active?1:0); // active first
+      if(byStatus) return byStatus;
+    } else if(VIEW.driverSort==='domicile'){
+      const byDom = (a.domicile||'').localeCompare(b.domicile||'');
+      if(byDom) return byDom;
+    } else if(VIEW.driverSort==='cycle'){
+      const byCycle = (b.cycleHoursUsed||0) - (a.cycleHoursUsed||0);
+      if(byCycle) return byCycle;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
   const DOW = ['Su','Mo','Tu','We','Th','Fr','Sa'];
   const DOW_FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const table = el('table',{class:'list'});
@@ -2324,7 +2439,7 @@ function renderDriversPage(){
     el('th',{},'Work Days'), el('th',{},'Trip Times'), el('th',{},'Runs'),
     el('th',{},'Preferred Truck'), el('th',{},'Cycle Hrs'), el('th',{},'')
   ]));
-  STATE.drivers.slice().sort(function(a,b){ return a.name.localeCompare(b.name); }).forEach(function(d){
+  visibleDrivers.forEach(function(d){
     if(typeof d.cycleHoursUsed!=='number') d.cycleHoursUsed = 0;
     if(!Array.isArray(d.workDays)) d.workDays = [];
     if(!Array.isArray(d.tripTimes)) d.tripTimes = [];
@@ -2419,6 +2534,8 @@ function renderDriversPage(){
   });
   if(STATE.drivers.length===0){
     page.appendChild(el('div',{class:'empty-state'},[el('div',{class:'big'},'No drivers yet'), 'Upload a driver roster CSV, or add drivers manually above']));
+  } else if(visibleDrivers.length===0){
+    page.appendChild(el('div',{class:'empty-state'},[el('div',{class:'big'},'No matches'), 'No drivers match "'+VIEW.driverSearchQuery+'"']));
   } else {
     page.appendChild(el('div',{style:'overflow-x:auto;'}, table));
   }
