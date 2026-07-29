@@ -138,6 +138,21 @@
   .legend-swatch.sw-grounded{ background:var(--amber); }
   .legend-swatch.sw-down{ background:var(--red); }
   .legend-swatch.sw-rejected{ background:rgba(239,87,87,0.5); border:1px solid var(--red); }
+  .today-summary{
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    background:var(--bg-panel); border:1px solid var(--amber-dim); border-radius:10px;
+    padding:10px 16px; margin-bottom:14px;
+  }
+  .today-summary-label{ font-family:'Oswald',sans-serif; font-size:12.5px; letter-spacing:0.03em; color:var(--amber); font-weight:600; }
+  .today-chip{ display:flex; align-items:center; gap:5px; font-size:12px; color:var(--text-dim); }
+  .today-chip.warn{ color:var(--red); font-weight:600; }
+  .today-chip-n{ font-family:'Oswald',sans-serif; font-size:15px; font-weight:700; color:var(--text); }
+  .today-chip.warn .today-chip-n{ color:var(--red); }
+  .bulk-bar{
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    background:var(--bg-card); border:1px solid var(--amber-dim); border-radius:8px;
+    padding:8px 12px; margin-bottom:14px;
+  }
   .stats{ display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
   .search-bar{ display:flex; align-items:center; gap:10px; margin-bottom:14px; }
   .search-input{
@@ -245,6 +260,7 @@
   .card.solo5{ border-left-color: var(--gold); background: rgba(242,183,5,0.10); }
   .card.conflict{ border-left-color: var(--red); box-shadow: 0 0 0 1px rgba(239,87,87,0.4); }
   .card .row1{ display:flex; align-items:flex-start; justify-content:space-between; gap:6px; }
+  .card .block-select{ margin-top:3px; cursor:pointer; }
   .card .time{ font-family:'Oswald',sans-serif; font-size:16px; font-weight:600; color:var(--amber); letter-spacing:0.02em; }
   .card .endtime{ font-size:10px; color:var(--text-faint); margin-top:1px; font-family:'JetBrains Mono',monospace; }
   .card .typebadge{
@@ -374,7 +390,7 @@ let lastKnownUpdatedBy = null; // which account made the last save -- only warn 
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [] };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 let currentUser = null; // { id, email } once signed in, else null
@@ -928,9 +944,11 @@ function render(){
 
   app.appendChild(renderHeader());
   app.appendChild(renderLegend());
+  app.appendChild(renderTodaySummary());
   app.appendChild(renderStats());
   if(VIEW.mode==='board'){
     app.appendChild(renderSearchBar());
+    if(VIEW.selectedBlockIds.length>0) app.appendChild(renderBlockBulkBar());
     app.appendChild(renderBoard());
   } else if(VIEW.mode==='timeline'){
     app.appendChild(renderTimeline());
@@ -1095,6 +1113,19 @@ function renderSearchBar(){
   ]);
   wrap.appendChild(typeFilterSel);
   return wrap;
+}
+
+function clearCurrentWeek(){
+  const ws = fmtISO(VIEW.weekStart);
+  const count = STATE.blocks.filter(function(b){ return b.weekStart===ws; }).length;
+  if(count===0){ showToast('This week is already empty'); return; }
+  if(!window.confirm('Delete all '+count+' block(s) in the week of '+fmtWeekLabel(VIEW.weekStart)+'? Trucks and drivers are not affected. This can\u2019t be undone (though History still has earlier snapshots).')) return;
+  STATE.blocks = STATE.blocks.filter(function(b){ return b.weekStart!==ws; });
+  VIEW.selectedBlockIds = [];
+  logAction('Cleared all '+count+' block(s) for week of '+fmtWeekLabel(VIEW.weekStart));
+  saveState();
+  showToast('Cleared '+count+' block(s) for this week');
+  render();
 }
 
 function exportData(){
@@ -1383,6 +1414,7 @@ function renderHeader(){
     el('button',{class:'btn'+(VIEW.mode==='timeline'?' active-mode':''), onclick:function(){VIEW.mode='timeline'; render();}}, '\ud83d\udcca Timeline'),
     el('button',{class:'btn'+(VIEW.mode==='drivers'?' active-mode':''), onclick:function(){VIEW.mode='drivers'; render();}}, '\ud83d\udc64 Drivers'),
     el('button',{class:'btn', onclick:function(){VIEW.showTrucks=true; render();}}, '\ud83d\ude9a Trucks'),
+    isAdmin() ? el('button',{class:'btn', style:'color:var(--red);', title:'Delete every block in the currently viewed week (trucks and drivers are untouched)', onclick:function(){ clearCurrentWeek(); }}, '\ud83e\uddf9 Clear This Week') : null,
     el('button',{class:'btn', title:'View and restore previous saved versions', onclick:function(){ openHistory(); }}, '\ud83d\udd50 History'),
     isAdmin() ? el('button',{class:'btn', title:'See who did what, and when', onclick:function(){ openActivityLog(); }}, '\ud83d\udcdd Activity') : null,
     isAdmin() ? el('button',{class:'btn', title:'Invite a new person by email', onclick:function(){ promptInvite(); }}, '\u2795 Invite') : null,
@@ -1701,6 +1733,66 @@ function driverHOSViolation(driverName, block){
   return null;
 }
 
+function renderTodaySummary(){
+  const todayDate = toDateOnly(new Date());
+  const todayIso = fmtISO(todayDate);
+  const todayWeekStart = fmtISO(getWeekStart(new Date()));
+  // Only show it when the currently viewed week is the real current week -- otherwise
+  // "today" doesn't live on the visible board at all.
+  if(fmtISO(VIEW.weekStart) !== todayWeekStart) return el('span',{});
+
+  const dayIndex = todayDate.getDay();
+  const todayBlocks = STATE.blocks.filter(function(b){ return !b.rejected && b.date===todayIso; });
+  const noDriver = todayBlocks.filter(function(b){ return !b.driverName; }).length;
+  const noTruck = todayBlocks.filter(function(b){ return !b.truckId; }).length;
+  const shortage = truckShortageForDay(todayDate);
+
+  const chip = function(n, label, warn){
+    return el('div',{class:'today-chip'+(warn&&n>0?' warn':'')},[
+      el('span',{class:'today-chip-n'}, String(n)),
+      el('span',{}, label)
+    ]);
+  };
+
+  return el('div',{class:'today-summary'},[
+    el('span',{class:'today-summary-label'}, '\ud83d\udcc5 Today ('+DAY_NAMES[dayIndex]+')'),
+    chip(todayBlocks.length, 'trips'),
+    chip(noDriver, 'no driver', true),
+    chip(noTruck, 'no truck', true),
+    chip(shortage, 'short trucks', true)
+  ]);
+}
+
+function renderBlockBulkBar(){
+  const n = VIEW.selectedBlockIds.length;
+  const bar = el('div',{class:'bulk-bar'});
+  bar.appendChild(el('span',{style:'font-size:12px; color:var(--text-dim);'}, n+' block'+(n===1?'':'s')+' selected'));
+  bar.appendChild(el('button',{class:'btn small', onclick:function(){
+    const ids = VIEW.selectedBlockIds.slice();
+    STATE.blocks.forEach(function(b){ if(ids.indexOf(b.id)!==-1) b.rejected = true; });
+    logAction('Bulk rejected '+ids.length+' block(s)');
+    VIEW.selectedBlockIds = [];
+    saveState(); render();
+  }}, '\u2716 Reject selected'));
+  bar.appendChild(el('button',{class:'btn small', onclick:function(){
+    const ids = VIEW.selectedBlockIds.slice();
+    STATE.blocks.forEach(function(b){ if(ids.indexOf(b.id)!==-1) b.rejected = false; });
+    logAction('Bulk restored '+ids.length+' block(s)');
+    VIEW.selectedBlockIds = [];
+    saveState(); render();
+  }}, '\u21a9 Restore selected'));
+  bar.appendChild(el('button',{class:'btn small', style:'color:var(--red); border-color:var(--red);', onclick:function(){
+    const ids = VIEW.selectedBlockIds.slice();
+    if(!window.confirm('Delete '+ids.length+' selected block(s)? This can\u2019t be undone.')) return;
+    STATE.blocks = STATE.blocks.filter(function(b){ return ids.indexOf(b.id)===-1; });
+    logAction('Bulk deleted '+ids.length+' block(s)');
+    VIEW.selectedBlockIds = [];
+    saveState(); render();
+  }}, '\ud83d\uddd1 Delete selected'));
+  bar.appendChild(el('button',{class:'btn small', onclick:function(){ VIEW.selectedBlockIds=[]; render(); }}, 'Clear selection'));
+  return bar;
+}
+
 function renderStats(){
   const blocks = currentWeekBlocks();
   const unassignedTruck = blocks.filter(function(b){ return !b.truckId; }).length;
@@ -1886,10 +1978,20 @@ function renderCard(b){
 
   if(b.rejected) card.appendChild(el('div',{class:'rejected-tag'}, '\u2716 REJECTED'));
 
+  const selectCb = el('input',{type:'checkbox', class:'block-select', checked: VIEW.selectedBlockIds.indexOf(b.id)!==-1 ? 'checked' : null,
+    onchange:function(e){
+      if(e.target.checked) VIEW.selectedBlockIds.push(b.id);
+      else VIEW.selectedBlockIds = VIEW.selectedBlockIds.filter(function(x){ return x!==b.id; });
+      render();
+    }});
+
   card.appendChild(el('div',{class:'row1'},[
-    el('div',{},[
-      el('div',{class:'time mono'}, b.anchorTime),
-      el('div',{class:'endtime'}, fmtEndLabel(b))
+    el('div',{style:'display:flex; align-items:flex-start; gap:6px;'},[
+      selectCb,
+      el('div',{},[
+        el('div',{class:'time mono'}, b.anchorTime),
+        el('div',{class:'endtime'}, fmtEndLabel(b))
+      ])
     ]),
     typeBadge
   ]));
