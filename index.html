@@ -654,10 +654,29 @@ async function loadState(){
 }
 
 let saveTimer=null;
+let saveInFlight=false;
+let saveQueuedWhileInFlight=false;
 function saveState(opts){
   opts = opts || {};
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async ()=>{
+  saveTimer = setTimeout(function(){ performSave(opts); }, 150);
+}
+
+// The actual save. Kept separate from the debounce timer so it can also be re-invoked
+// directly once a previous save finishes, instead of racing it. Without this, firing several
+// saves back-to-back (e.g. removing a truck from a handful of blocks in quick succession, each
+// more than 150ms apart) could let two upserts be in flight at once; whichever response
+// happened to arrive back last -- not necessarily the one sent last -- would win and set
+// lastKnownUpdatedAt, occasionally leaving it out of sync with what's actually in the
+// database and tripping a false "someone else made changes" warning on the next save.
+// Serializing saves (never more than one in flight) removes that race entirely.
+async function performSave(opts){
+  if(saveInFlight){
+    saveQueuedWhileInFlight = true;
+    return;
+  }
+  saveInFlight = true;
+  try{
     if(sb){
       try{
         // Optimistic-concurrency check: only warn if the DB has a save we genuinely haven't
@@ -702,7 +721,13 @@ function saveState(opts){
            or an unpublished artifact). Fails silently — use Export/Import to back up. */
       }
     }
-  }, 150);
+  } finally {
+    saveInFlight = false;
+    if(saveQueuedWhileInFlight){
+      saveQueuedWhileInFlight = false;
+      performSave({}); // picks up STATE as it stands now, including everything queued in the meantime
+    }
+  }
 }
 
 function showConflictWarning(){
