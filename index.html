@@ -327,6 +327,25 @@
   .modal-body{ padding:18px 20px; overflow-y:auto; }
   .modal-foot{ padding:14px 20px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:8px; }
 
+  .calendar-page{ padding:4px 0 40px; }
+  .cal-dow-row{ display:grid; grid-template-columns:repeat(7,1fr); gap:8px; margin-bottom:8px; }
+  .cal-dow{ text-align:center; font-size:11.5px; font-weight:600; letter-spacing:0.04em; color:var(--text-dim); text-transform:uppercase; }
+  .cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:8px; }
+  .cal-cell{ background:var(--bg-panel); border:1px solid var(--line); border-radius:10px; min-height:96px; padding:8px; cursor:pointer; transition:border-color .15s; display:flex; flex-direction:column; gap:6px; }
+  .cal-cell:hover{ border-color:var(--amber-dim); }
+  .cal-cell.cal-outside{ opacity:0.35; }
+  .cal-cell.cal-today{ border-color:var(--amber); box-shadow:0 0 0 1px var(--amber) inset; }
+  .cal-daynum{ font-size:12.5px; font-family:'JetBrains Mono',monospace; color:var(--text-dim); }
+  .cal-today .cal-daynum{ color:var(--amber); font-weight:700; }
+  .cal-chips{ display:flex; flex-direction:column; gap:3px; }
+  .cal-chip{ background:var(--bg-card); border:1px solid var(--line); border-radius:5px; padding:2px 6px; font-size:10.5px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .cal-chip-more{ color:var(--text-dim); background:transparent; border:none; padding:1px 2px; }
+  @media (max-width: 720px){
+    .cal-grid, .cal-dow-row{ grid-template-columns:repeat(7,minmax(34px,1fr)); gap:4px; }
+    .cal-cell{ min-height:64px; padding:5px; }
+    .cal-dow{ font-size:9.5px; }
+  }
+
   table.list{ width:100%; border-collapse:collapse; font-size:12.5px; }
   table.list th{ text-align:left; color:var(--text-dim); font-weight:500; font-size:11px; padding:6px 8px; border-bottom:1px solid var(--line); }
   table.list td{ padding:7px 8px; border-bottom:1px solid var(--line-soft); vertical-align:middle; }
@@ -394,7 +413,7 @@ let lastKnownUpdatedBy = null; // which account made the last save -- only warn 
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name' };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 let currentUser = null; // { id, email } once signed in, else null
@@ -436,6 +455,8 @@ function nextBlockType(t){
 }
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const MONTHS_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const DOW_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
 function uid(p){ return (p||'id')+'_'+Math.random().toString(36).slice(2,10); }
 
@@ -968,6 +989,8 @@ function renderInner(){
     app.appendChild(renderBoard());
   } else if(VIEW.mode==='timeline'){
     app.appendChild(renderTimeline());
+  } else if(VIEW.mode==='calendar'){
+    app.appendChild(renderCalendarPage());
   } else {
     app.appendChild(renderDriversPage());
   }
@@ -976,6 +999,7 @@ function renderInner(){
   if(VIEW.showHistory) app.appendChild(renderHistoryModal());
   if(VIEW.showActivity) app.appendChild(renderActivityModal());
   if(VIEW.showPdfOptions) app.appendChild(renderPdfOptionsModal());
+  if(VIEW.calendarDayModal) app.appendChild(renderCalendarDayModal());
   ensureDatalist();
   maybeScrollToToday();
 }
@@ -1446,6 +1470,7 @@ function renderHeader(){
     el('button',{class:'btn'+(VIEW.mode==='board'?' active-mode':''), onclick:function(){VIEW.mode='board'; render();}}, '\ud83d\udcc5 Board'),
     el('button',{class:'btn'+(VIEW.mode==='timeline'?' active-mode':''), onclick:function(){VIEW.mode='timeline'; render();}}, '\ud83d\udcca Timeline'),
     el('button',{class:'btn'+(VIEW.mode==='drivers'?' active-mode':''), onclick:function(){VIEW.mode='drivers'; render();}}, '\ud83d\udc64 Drivers'),
+    el('button',{class:'btn'+(VIEW.mode==='calendar'?' active-mode':''), title:'Manage driver vacation / time-off days', onclick:function(){VIEW.mode='calendar'; render();}}, '\ud83d\udcc5\ufe0f Calendar'),
     el('button',{class:'btn', onclick:function(){VIEW.showTrucks=true; render();}}, '\ud83d\ude9a Trucks'),
     el('button',{class:'btn', title:'View and restore previous saved versions', onclick:function(){ openHistory(); }}, '\ud83d\udd50 History'),
     isAdmin() ? el('button',{class:'btn', title:'See who did what, and when', onclick:function(){ openActivityLog(); }}, '\ud83d\udcdd Activity') : null,
@@ -2421,7 +2446,7 @@ function renderDriversPage(){
   page.appendChild(el('div',{class:'csv-note'}, [
     el('div',{}, [el('b',{},'Work days / Trip times / Runs'), ' \u2014 the driver\u2019s standing weekly schedule. Click "Assign Drivers" on the board to auto-fill blocks with no driver yet, matching by day, anchor time, and Solo type \u2014 while respecting the 10h minimum rest between trips and the 70h/8-day cycle cap.']),
     el('div',{}, [el('b',{},'Cycle hours used'), ' \u2014 the driver\u2019s starting point on the 70h clock, tracked forward automatically (Timeline view) and reset after any 34h+ break.']),
-    el('div',{}, [el('b',{},'Time Off'), ' \u2014 vacation/leave days. "Assign Drivers" will never place a driver on a day they\u2019re marked off, and they won\u2019t appear as a pickable option in the board\u2019s driver dropdown for that date either.'])
+    el('div',{}, [el('b',{},'Time Off'), ' \u2014 vacation/leave days, managed from the \ud83d\udcc5\ufe0f Calendar tab. "Assign Drivers" will never place a driver on a day they\u2019re marked off, and they won\u2019t appear as a pickable option in the board\u2019s driver dropdown for that date either.'])
   ]));
 
   const driverSearchSortRow = el('div',{style:'display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap;'});
@@ -2541,45 +2566,14 @@ function renderDriversPage(){
         saveState(); render();
       }
     });
-    const timeOffWrap = el('div',{style:'display:flex; flex-wrap:wrap; gap:3px; max-width:150px;'});
-    d.timeOff.slice().sort().forEach(function(iso){
-      timeOffWrap.appendChild(el('span',{
-        title:iso,
-        style:'display:inline-flex; align-items:center; gap:3px; background:var(--bg-card); border:1px solid var(--line); border-radius:5px; padding:2px 5px; font-size:10px; font-family:\'JetBrains Mono\',monospace; color:var(--text-dim);'
-      },[
-        document.createTextNode(iso.slice(5)),
-        el('span',{style:'cursor:pointer; color:var(--text-faint);', title:'Remove', onclick:function(){
-          d.timeOff = d.timeOff.filter(function(x){ return x!==iso; });
-          logAction('Removed day off '+iso+' for '+d.name);
-          saveState(); render();
-        }}, '\u2715')
-      ]));
-    });
-    timeOffWrap.appendChild(el('button',{class:'btn small', style:'padding:3px 7px; font-size:10.5px;', title:'Add day(s) off (vacation/leave) \u2014 the driver won\u2019t be auto-assigned, and won\u2019t appear as pickable, on those dates',
-      onclick:function(){
-        const range = window.prompt('Add day(s) off for '+d.name+'\nFormat: YYYY-MM-DD or YYYY-MM-DD to YYYY-MM-DD', '');
-        if(!range) return;
-        const parts = range.split(/\s+to\s+/i).map(function(s){ return s.trim(); });
-        const start = parts[0], end = parts[1] || parts[0];
-        if(!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)){
-          showToast('Use format YYYY-MM-DD or YYYY-MM-DD to YYYY-MM-DD', true);
-          return;
-        }
-        const s = new Date(start+'T00:00:00'), e = new Date(end+'T00:00:00');
-        if(isNaN(s) || isNaN(e) || e<s){
-          showToast('Invalid date range', true);
-          return;
-        }
-        let cur = s, added=0;
-        while(cur<=e){
-          const iso = fmtISO(cur);
-          if(d.timeOff.indexOf(iso)===-1){ d.timeOff.push(iso); added++; }
-          cur = addDays(cur,1);
-        }
-        logAction('Added '+added+' day(s) off for '+d.name+' ('+start+(end!==start?(' to '+end):'')+')');
-        saveState(); render();
-      }
-    }, '+ Add'));
+    const upcomingOff = d.timeOff.filter(function(iso){ return iso >= fmtISO(toDateOnly(new Date())); }).sort();
+    const timeOffWrap = upcomingOff.length>0
+      ? el('button',{class:'btn small', style:'padding:3px 8px; font-size:10.5px;', title:upcomingOff.join(', '),
+          onclick:function(){ VIEW.mode='calendar'; VIEW.calendarDayModal=upcomingOff[0]; render(); }
+        }, '\ud83c\udf34 '+upcomingOff.length+' upcoming')
+      : el('button',{class:'btn small', style:'padding:3px 8px; font-size:10.5px; color:var(--text-faint);', title:'Manage in the Calendar tab',
+          onclick:function(){ VIEW.mode='calendar'; render(); }
+        }, 'None set');
     const tr = el('tr',{},[
       el('td',{}, d.name),
       el('td',{}, statusBtn),
@@ -2605,6 +2599,133 @@ function renderDriversPage(){
     page.appendChild(el('div',{style:'overflow-x:auto;'}, table));
   }
   return page;
+}
+
+// A driver's timeOff list is just an array of ISO date strings ('YYYY-MM-DD').
+// This is the single place both the calendar grid and the day-detail modal read from.
+function driversOffOn(iso){
+  return STATE.drivers.filter(function(d){ return Array.isArray(d.timeOff) && d.timeOff.indexOf(iso)!==-1; })
+    .sort(function(a,b){ return a.name.localeCompare(b.name); });
+}
+
+function renderCalendarPage(){
+  const page = el('div',{class:'calendar-page'});
+  const month = VIEW.calendarMonth;
+  const y = month.getFullYear(), m = month.getMonth();
+  const monthLabel = MONTHS_FULL[m]+' '+y;
+  const todayIso = fmtISO(toDateOnly(new Date()));
+
+  const nav = el('div',{style:'display:flex; align-items:center; gap:12px; margin-bottom:16px;'},[
+    el('button',{class:'btn small', onclick:function(){ VIEW.calendarMonth = new Date(y, m-1, 1); render(); }}, '\u2039'),
+    el('h2',{style:'margin:0; min-width:190px; text-align:center; font-size:17px;'}, monthLabel),
+    el('button',{class:'btn small', onclick:function(){ VIEW.calendarMonth = new Date(y, m+1, 1); render(); }}, '\u203a'),
+    el('button',{class:'btn small', onclick:function(){ VIEW.calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1); render(); }}, 'Today'),
+    el('div',{style:'flex:1;'}),
+    el('div',{style:'font-size:12px; color:var(--text-dim);'}, 'Click any day to add or remove time off')
+  ]);
+  page.appendChild(nav);
+
+  const dowRow = el('div',{class:'cal-dow-row'});
+  DOW_SHORT.forEach(function(d){ dowRow.appendChild(el('div',{class:'cal-dow'}, d)); });
+  page.appendChild(dowRow);
+
+  const firstOfMonth = new Date(y, m, 1);
+  const gridStart = addDays(firstOfMonth, -firstOfMonth.getDay());
+  const lastOfMonth = new Date(y, m+1, 0);
+  const trailingDays = 6 - lastOfMonth.getDay();
+  const gridEnd = addDays(lastOfMonth, trailingDays);
+
+  const grid = el('div',{class:'cal-grid'});
+  let cur = gridStart;
+  while(cur<=gridEnd){
+    const iso = fmtISO(cur);
+    const inMonth = cur.getMonth()===m;
+    const off = driversOffOn(iso);
+    const cell = el('div',{class:'cal-cell'+(inMonth?'':' cal-outside')+(iso===todayIso?' cal-today':''),
+      onclick:function(){ VIEW.calendarDayModal = iso; render(); }
+    });
+    cell.appendChild(el('div',{class:'cal-daynum'}, String(cur.getDate())));
+    const chips = el('div',{class:'cal-chips'});
+    off.slice(0,4).forEach(function(d){
+      chips.appendChild(el('div',{class:'cal-chip', title:d.name}, d.name));
+    });
+    if(off.length>4) chips.appendChild(el('div',{class:'cal-chip cal-chip-more'}, '+'+(off.length-4)+' more'));
+    cell.appendChild(chips);
+    grid.appendChild(cell);
+    cur = addDays(cur,1);
+  }
+  page.appendChild(grid);
+  return page;
+}
+
+function renderCalendarDayModal(){
+  const iso = VIEW.calendarDayModal;
+  const d = new Date(iso+'T00:00:00');
+  const label = DAY_NAMES[d.getDay()]+', '+d.getDate()+' '+MONTHS_FULL[d.getMonth()]+' '+d.getFullYear();
+  const overlay = el('div',{class:'overlay', onclick:function(e){ if(e.target===overlay){ VIEW.calendarDayModal=null; render(); } }});
+  const modal = el('div',{class:'modal', style:'max-width:420px;'});
+  modal.appendChild(el('div',{class:'modal-head'},[
+    el('h2',{}, '\ud83c\udf34 '+label),
+    el('button',{class:'x', onclick:function(){ VIEW.calendarDayModal=null; render(); }}, '\u2715')
+  ]));
+  const body = el('div',{class:'modal-body'});
+
+  const off = driversOffOn(iso);
+  body.appendChild(el('div',{style:'margin-bottom:14px;'}, off.length===0
+    ? el('div',{style:'color:var(--text-dim); font-size:13px;'}, 'No one is off on this day.')
+    : el('div',{style:'display:flex; flex-direction:column; gap:6px;'}, off.map(function(driver){
+        return el('div',{style:'display:flex; align-items:center; justify-content:space-between; background:var(--bg-card); border:1px solid var(--line); border-radius:8px; padding:8px 10px;'},[
+          el('span',{}, driver.name),
+          el('button',{class:'btn small', title:'Remove this day off', onclick:function(){
+            driver.timeOff = driver.timeOff.filter(function(x){ return x!==iso; });
+            logAction('Removed day off '+iso+' for '+driver.name);
+            saveState(); render();
+          }}, '\u2715 Remove')
+        ]);
+      }))
+  ));
+
+  const availableDrivers = STATE.drivers.filter(function(d2){ return off.indexOf(d2)===-1; })
+    .sort(function(a,b){ return a.name.localeCompare(b.name); });
+
+  if(availableDrivers.length>0){
+    body.appendChild(el('div',{style:'border-top:1px solid var(--line); padding-top:14px;'},[
+      el('div',{style:'font-size:12px; color:var(--text-dim); margin-bottom:8px;'}, 'Add time off'),
+      (function(){
+        const driverSel = el('select',{id:'calDriverSel', style:'width:100%; background:var(--bg-card); border:1px solid var(--line); color:var(--text); padding:8px 10px; border-radius:8px; font-size:13px; margin-bottom:8px;'});
+        availableDrivers.forEach(function(d2){ driverSel.appendChild(el('option',{value:d2.id}, d2.name)); });
+        return driverSel;
+      })(),
+      el('div',{style:'display:flex; gap:8px; align-items:center; margin-bottom:10px;'},[
+        el('label',{style:'font-size:11.5px; color:var(--text-dim);'}, 'From'),
+        el('input',{id:'calFromDate', type:'date', value:iso, style:'flex:1; background:var(--bg-card); border:1px solid var(--line); color:var(--text); padding:6px 8px; border-radius:6px; font-size:12.5px;'}),
+        el('label',{style:'font-size:11.5px; color:var(--text-dim);'}, 'To'),
+        el('input',{id:'calToDate', type:'date', value:iso, style:'flex:1; background:var(--bg-card); border:1px solid var(--line); color:var(--text); padding:6px 8px; border-radius:6px; font-size:12.5px;'})
+      ]),
+      el('button',{class:'btn primary', style:'width:100%;', onclick:function(){
+        const driverId = document.getElementById('calDriverSel').value;
+        const from = document.getElementById('calFromDate').value;
+        const to = document.getElementById('calToDate').value;
+        const driver = STATE.drivers.find(function(d2){ return d2.id===driverId; });
+        if(!driver || !from || !to){ return; }
+        const s = new Date(from+'T00:00:00'), e = new Date(to+'T00:00:00');
+        if(isNaN(s) || isNaN(e) || e<s){ showToast('Invalid date range', true); return; }
+        if(!Array.isArray(driver.timeOff)) driver.timeOff=[];
+        let cursor = s, added=0;
+        while(cursor<=e){
+          const dIso = fmtISO(cursor);
+          if(driver.timeOff.indexOf(dIso)===-1){ driver.timeOff.push(dIso); added++; }
+          cursor = addDays(cursor,1);
+        }
+        logAction('Added '+added+' day(s) off for '+driver.name+' ('+from+(to!==from?(' to '+to):'')+')');
+        saveState(); render();
+      }}, '+ Add time off')
+    ]));
+  }
+
+  modal.appendChild(body);
+  overlay.appendChild(modal);
+  return overlay;
 }
 
 function parseCSV(text){
@@ -2872,6 +2993,7 @@ document.addEventListener('keydown', function(e){
 
 (async function init(){
   VIEW.weekStart = getWeekStart(new Date());
+  VIEW.calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
   initLocalTheme();
   if(!sb){
     // Local/no-auth mode: nothing to gate, just load and go.
