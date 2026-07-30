@@ -1902,14 +1902,16 @@ function renderBlockBulkBar(){
     VIEW.selectedBlockIds = [];
     saveState(); render();
   }}, '\u21a9 Restore selected'));
-  bar.appendChild(el('button',{class:'btn small', style:'color:var(--red); border-color:var(--red);', onclick:function(){
-    const ids = VIEW.selectedBlockIds.slice();
-    if(!window.confirm('Delete '+ids.length+' selected block(s)? This can\u2019t be undone.')) return;
-    STATE.blocks = STATE.blocks.filter(function(b){ return ids.indexOf(b.id)===-1; });
-    logAction('Bulk deleted '+ids.length+' block(s)');
-    VIEW.selectedBlockIds = [];
-    saveState(); render();
-  }}, '\ud83d\uddd1 Delete selected'));
+  if(isAdmin()){
+    bar.appendChild(el('button',{class:'btn small', style:'color:var(--red); border-color:var(--red);', onclick:function(){
+      const ids = VIEW.selectedBlockIds.slice();
+      if(!window.confirm('Delete '+ids.length+' selected block(s)? This can\u2019t be undone.')) return;
+      STATE.blocks = STATE.blocks.filter(function(b){ return ids.indexOf(b.id)===-1; });
+      logAction('Bulk deleted '+ids.length+' block(s)');
+      VIEW.selectedBlockIds = [];
+      saveState(); render();
+    }}, '\ud83d\uddd1 Delete selected'));
+  }
   bar.appendChild(el('button',{class:'btn small', onclick:function(){ VIEW.selectedBlockIds=[]; render(); }}, 'Clear selection'));
   return bar;
 }
