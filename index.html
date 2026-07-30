@@ -1497,10 +1497,13 @@ function driverWeeklyConsumedHours(driverName){
 // template. When more than one driver could take a block, priority goes to whoever has
 // FEWER work days set (they have fewer slots overall, so give them first pick before more
 // flexible drivers who could just as easily fill a different day instead).
+function driverOnTimeOff(driver, dateIso){
+  return Array.isArray(driver.timeOff) && driver.timeOff.indexOf(dateIso)!==-1;
+}
 function assignDriversAutomatically(){
   const candidates = currentWeekBlocks().filter(function(b){ return !b.rejected && !b.driverName; })
     .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); }); // chronological, so HOS accumulation makes sense as we go
-  let assigned=0, noMatch=0, hosBlocked=0;
+  let assigned=0, noMatch=0, hosBlocked=0, onLeave=0;
   candidates.forEach(function(b){
     const matches = STATE.drivers.filter(function(d){
       const days = Array.isArray(d.workDays) ? d.workDays : [];
@@ -1509,6 +1512,8 @@ function assignDriversAutomatically(){
       if(days.indexOf(b.dayIndex)===-1) return false;
       if(types.indexOf(b.type)===-1) return false;
       if(times.length>0 && times.indexOf(b.anchorTime)===-1) return false;
+      // Never on a day the driver marked as off (vacation/leave).
+      if(driverOnTimeOff(d, b.date)) return false;
       // Must actually be free at this time (no overlapping block already on them).
       if(checkDriverConflict(d.name, Object.assign({}, b, {driverName: d.name}))) return false;
       // Must not break the 10h rest rule or the 70h/8-day rolling cycle cap.
@@ -1529,20 +1534,21 @@ function assignDriversAutomatically(){
       b.driverName = matches[0].name;
       assigned++;
     } else {
-      // Distinguish "no schedule matched at all" from "matched a schedule but HOS/weekly cap blocked it"
+      // Distinguish "no schedule matched at all" from "matched a schedule but HOS/70h/leave blocked it"
       const scheduleMatches = STATE.drivers.filter(function(d){
         const days = Array.isArray(d.workDays) ? d.workDays : [];
         const times = Array.isArray(d.tripTimes) ? d.tripTimes : [];
         const types = Array.isArray(d.allowedTypes) ? d.allowedTypes : ['solo1','solo2','solo5'];
         return days.indexOf(b.dayIndex)!==-1 && types.indexOf(b.type)!==-1 && (times.length===0 || times.indexOf(b.anchorTime)!==-1);
       });
-      if(scheduleMatches.length>0) hosBlocked++;
+      if(scheduleMatches.length>0 && scheduleMatches.every(function(d){ return driverOnTimeOff(d, b.date); })) onLeave++;
+      else if(scheduleMatches.length>0) hosBlocked++;
       else noMatch++;
     }
   });
   if(assigned>0) saveState();
-  logAction('Auto-assigned drivers: '+assigned+' filled, '+noMatch+' no match, '+hosBlocked+' HOS/70h-blocked');
-  showToast('Assigned '+assigned+' driver(s)'+(hosBlocked?(' \u2014 '+hosBlocked+' blocked by HOS/70h rules'):'')+(noMatch?(' \u2014 '+noMatch+' had no matching schedule'):''));
+  logAction('Auto-assigned drivers: '+assigned+' filled, '+noMatch+' no match, '+hosBlocked+' HOS/70h-blocked, '+onLeave+' on leave');
+  showToast('Assigned '+assigned+' driver(s)'+(hosBlocked?(' \u2014 '+hosBlocked+' blocked by HOS/70h rules'):'')+(onLeave?(' \u2014 '+onLeave+' had only drivers on leave that day'):'')+(noMatch?(' \u2014 '+noMatch+' had no matching schedule'):''));
   render();
 }
 
@@ -2038,12 +2044,18 @@ function renderCard(b){
       if(name && name.trim()){
         const trimmed = name.trim();
         if(!STATE.drivers.find(function(d){ return d.name.toLowerCase()===trimmed.toLowerCase(); })){
-          STATE.drivers.push({id: uid('drv'), name: trimmed, preferredTruckId:null, cycleHoursUsed:0, workDays:[], tripTimes:[], allowedTypes:['solo1','solo2','solo5'], active:true, email:'', phone:'', domicile:''});
+          STATE.drivers.push({id: uid('drv'), name: trimmed, preferredTruckId:null, cycleHoursUsed:0, workDays:[], tripTimes:[], allowedTypes:['solo1','solo2','solo5'], timeOff:[], active:true, email:'', phone:'', domicile:''});
         }
         const test = Object.assign({}, b, {driverName: trimmed});
         const c = checkDriverConflict(trimmed, test);
         if(c){
           showToast('\ud83d\udeab '+trimmed+' is already on block '+(c.blockId||'')+' ('+c.anchorTime+') \u2014 conflicting times', true);
+          render();
+          return;
+        }
+        const newDriverObj = STATE.drivers.find(function(d){ return d.name.toLowerCase()===trimmed.toLowerCase(); });
+        if(newDriverObj && driverOnTimeOff(newDriverObj, b.date)){
+          showToast('\ud83d\udeab '+trimmed+' is marked off (vacation/leave) on '+b.date, true);
           render();
           return;
         }
@@ -2068,6 +2080,12 @@ function renderCard(b){
         render();
         return;
       }
+      const valDriverObj = STATE.drivers.find(function(d){ return d.name===val; });
+      if(valDriverObj && driverOnTimeOff(valDriverObj, b.date)){
+        showToast('\ud83d\udeab '+val+' is marked off (vacation/leave) on '+b.date, true);
+        render();
+        return;
+      }
       const hos = driverHOSViolation(val, test);
       if(hos){
         showToast('\ud83d\udeab '+val+' \u2014 '+hos, true);
@@ -2083,6 +2101,7 @@ function renderCard(b){
   driverSel.appendChild(el('option',{value:''}, '\u2014 No driver \u2014'));
   STATE.drivers.slice().sort(function(a,b2){ return a.name.localeCompare(b2.name); }).forEach(function(d){
     if(d.name!==b.driverName){
+      if(driverOnTimeOff(d, b.date)) return;
       const test = Object.assign({}, b, {driverName: d.name});
       if(checkDriverConflict(d.name, test)) return;
       if(driverHOSViolation(d.name, test)) return;
@@ -2382,7 +2401,7 @@ function renderDriversPage(){
   addRow.appendChild(el('button',{class:'btn primary', onclick:function(){
     const v = nameInput.value.trim();
     if(!v) return;
-    STATE.drivers.push({id: uid('drv'), name:v, preferredTruckId:null, cycleHoursUsed:0, workDays:[], tripTimes:[], allowedTypes:['solo1','solo2','solo5'], active:true, email:'', phone:'', domicile:''});
+    STATE.drivers.push({id: uid('drv'), name:v, preferredTruckId:null, cycleHoursUsed:0, workDays:[], tripTimes:[], allowedTypes:['solo1','solo2','solo5'], timeOff:[], active:true, email:'', phone:'', domicile:''});
     logAction('Added driver '+v);
     nameInput.value='';
     saveState(); render();
@@ -2391,11 +2410,12 @@ function renderDriversPage(){
 
   page.appendChild(el('div',{class:'csv-note'}, [
     el('div',{}, [el('b',{},'Work days / Trip times / Runs'), ' \u2014 the driver\u2019s standing weekly schedule. Click "Assign Drivers" on the board to auto-fill blocks with no driver yet, matching by day, anchor time, and Solo type \u2014 while respecting the 10h minimum rest between trips and the 70h/8-day cycle cap.']),
-    el('div',{}, [el('b',{},'Cycle hours used'), ' \u2014 the driver\u2019s starting point on the 70h clock, tracked forward automatically (Timeline view) and reset after any 34h+ break.'])
+    el('div',{}, [el('b',{},'Cycle hours used'), ' \u2014 the driver\u2019s starting point on the 70h clock, tracked forward automatically (Timeline view) and reset after any 34h+ break.']),
+    el('div',{}, [el('b',{},'Time Off'), ' \u2014 vacation/leave days. "Assign Drivers" will never place a driver on a day they\u2019re marked off, and they won\u2019t appear as a pickable option in the board\u2019s driver dropdown for that date either.'])
   ]));
 
   const driverSearchSortRow = el('div',{style:'display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap;'});
-  const driverSearchInput = el('input',{id:'driverSearchInput', value:VIEW.driverSearchQuery, placeholder:'\ud83d\udd0d Search driver, domicile, email or phone\u2026',
+  const driverSearchInput = el('input',{id:'driverSearchInput', value:VIEW.driverSearchQuery, placeholder:'\ud83d\udd0d Search driver, email or phone\u2026',
     style:'flex:1; min-width:200px; background:var(--bg-card); border:1px solid var(--line); color:var(--text); padding:9px 10px; border-radius:8px; font-size:13px;',
     oninput:function(e){ VIEW.driverSearchQuery = e.target.value; render(); }
   });
@@ -2404,7 +2424,6 @@ function renderDriversPage(){
     onchange:function(e){ VIEW.driverSort = e.target.value; render(); }},[
     el('option',{value:'name', selected: VIEW.driverSort==='name'?'selected':null}, 'Sort: Name'),
     el('option',{value:'status', selected: VIEW.driverSort==='status'?'selected':null}, 'Sort: Status'),
-    el('option',{value:'domicile', selected: VIEW.driverSort==='domicile'?'selected':null}, 'Sort: Domicile'),
     el('option',{value:'cycle', selected: VIEW.driverSort==='cycle'?'selected':null}, 'Sort: Cycle hours (high\u2192low)')
   ]));
   page.appendChild(driverSearchSortRow);
@@ -2413,7 +2432,6 @@ function renderDriversPage(){
   let visibleDrivers = STATE.drivers.filter(function(d){
     if(!driverSearchQ) return true;
     return (d.name||'').toLowerCase().indexOf(driverSearchQ)!==-1
-      || (d.domicile||'').toLowerCase().indexOf(driverSearchQ)!==-1
       || (d.email||'').toLowerCase().indexOf(driverSearchQ)!==-1
       || (d.phone||'').toLowerCase().indexOf(driverSearchQ)!==-1;
   });
@@ -2421,9 +2439,6 @@ function renderDriversPage(){
     if(VIEW.driverSort==='status'){
       const byStatus = (b.active?1:0) - (a.active?1:0); // active first
       if(byStatus) return byStatus;
-    } else if(VIEW.driverSort==='domicile'){
-      const byDom = (a.domicile||'').localeCompare(b.domicile||'');
-      if(byDom) return byDom;
     } else if(VIEW.driverSort==='cycle'){
       const byCycle = (b.cycleHoursUsed||0) - (a.cycleHoursUsed||0);
       if(byCycle) return byCycle;
@@ -2435,8 +2450,8 @@ function renderDriversPage(){
   const DOW_FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const table = el('table',{class:'list'});
   table.appendChild(el('tr',{},[
-    el('th',{},'Driver'), el('th',{},'Status'), el('th',{},'Domicile'), el('th',{},'Contact'),
-    el('th',{},'Work Days'), el('th',{},'Trip Times'), el('th',{},'Runs'),
+    el('th',{},'Driver'), el('th',{},'Status'), el('th',{},'Contact'),
+    el('th',{},'Work Days'), el('th',{},'Trip Times'), el('th',{},'Runs'), el('th',{},'Time Off'),
     el('th',{},'Preferred Truck'), el('th',{},'Cycle Hrs'), el('th',{},'')
   ]));
   visibleDrivers.forEach(function(d){
@@ -2444,6 +2459,7 @@ function renderDriversPage(){
     if(!Array.isArray(d.workDays)) d.workDays = [];
     if(!Array.isArray(d.tripTimes)) d.tripTimes = [];
     if(!Array.isArray(d.allowedTypes)) d.allowedTypes = ['solo1','solo2','solo5'];
+    if(!Array.isArray(d.timeOff)) d.timeOff = [];
     if(typeof d.active!=='boolean') d.active = true;
 
     const statusBtn = el('span',{class:'pill '+(d.active?'active':'down')+' small-btn', onclick:function(){
@@ -2515,14 +2531,53 @@ function renderDriversPage(){
         saveState(); render();
       }
     });
+    const timeOffWrap = el('div',{style:'display:flex; flex-wrap:wrap; gap:3px; max-width:150px;'});
+    d.timeOff.slice().sort().forEach(function(iso){
+      timeOffWrap.appendChild(el('span',{
+        title:iso,
+        style:'display:inline-flex; align-items:center; gap:3px; background:var(--bg-card); border:1px solid var(--line); border-radius:5px; padding:2px 5px; font-size:10px; font-family:\'JetBrains Mono\',monospace; color:var(--text-dim);'
+      },[
+        document.createTextNode(iso.slice(5)),
+        el('span',{style:'cursor:pointer; color:var(--text-faint);', title:'Remove', onclick:function(){
+          d.timeOff = d.timeOff.filter(function(x){ return x!==iso; });
+          logAction('Removed day off '+iso+' for '+d.name);
+          saveState(); render();
+        }}, '\u2715')
+      ]));
+    });
+    timeOffWrap.appendChild(el('button',{class:'btn small', style:'padding:3px 7px; font-size:10.5px;', title:'Add day(s) off (vacation/leave) \u2014 the driver won\u2019t be auto-assigned, and won\u2019t appear as pickable, on those dates',
+      onclick:function(){
+        const range = window.prompt('Add day(s) off for '+d.name+'\nFormat: YYYY-MM-DD or YYYY-MM-DD to YYYY-MM-DD', '');
+        if(!range) return;
+        const parts = range.split(/\s+to\s+/i).map(function(s){ return s.trim(); });
+        const start = parts[0], end = parts[1] || parts[0];
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)){
+          showToast('Use format YYYY-MM-DD or YYYY-MM-DD to YYYY-MM-DD', true);
+          return;
+        }
+        const s = new Date(start+'T00:00:00'), e = new Date(end+'T00:00:00');
+        if(isNaN(s) || isNaN(e) || e<s){
+          showToast('Invalid date range', true);
+          return;
+        }
+        let cur = s, added=0;
+        while(cur<=e){
+          const iso = fmtISO(cur);
+          if(d.timeOff.indexOf(iso)===-1){ d.timeOff.push(iso); added++; }
+          cur = addDays(cur,1);
+        }
+        logAction('Added '+added+' day(s) off for '+d.name+' ('+start+(end!==start?(' to '+end):'')+')');
+        saveState(); render();
+      }
+    }, '+ Add'));
     const tr = el('tr',{},[
-      el('td',{}, d.name+(d.domicile?'':'')),
+      el('td',{}, d.name),
       el('td',{}, statusBtn),
-      el('td',{class:'mono'}, d.domicile || '\u2014'),
       el('td',{}, contactWrap),
       el('td',{}, daysWrap),
       el('td',{}, timesInput),
       el('td',{}, typesWrap),
+      el('td',{}, timeOffWrap),
       el('td',{}, sel),
       el('td',{}, cycleInput),
       el('td',{}, el('button',{class:'icon-btn danger', onclick:function(){
@@ -2603,7 +2658,7 @@ function handleRosterFile(e){
       } else {
         STATE.drivers.push({
           id: uid('drv'), name: name, preferredTruckId:null, cycleHoursUsed:0,
-          workDays:[], tripTimes:[], allowedTypes:['solo1','solo2','solo5'],
+          workDays:[], tripTimes:[], allowedTypes:['solo1','solo2','solo5'], timeOff:[],
           active: active, email: email, phone: phone, domicile: domicile
         });
         added++;
@@ -2757,7 +2812,7 @@ function confirmCsvImport(parsed){
       added++;
     }
     if(p.driverName && !STATE.drivers.find(function(d){ return d.name.toLowerCase()===p.driverName.toLowerCase(); })){
-      STATE.drivers.push({id: uid('drv'), name: p.driverName, preferredTruckId:null, cycleHoursUsed:0, workDays:[], tripTimes:[], allowedTypes:['solo1','solo2','solo5'], active:true, email:'', phone:'', domicile:''});
+      STATE.drivers.push({id: uid('drv'), name: p.driverName, preferredTruckId:null, cycleHoursUsed:0, workDays:[], tripTimes:[], allowedTypes:['solo1','solo2','solo5'], timeOff:[], active:true, email:'', phone:'', domicile:''});
     }
   });
   saveState();
