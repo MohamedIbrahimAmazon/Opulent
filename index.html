@@ -1525,6 +1525,52 @@ function driverWeeklyConsumedHours(driverName){
 function driverOnTimeOff(driver, dateIso){
   return Array.isArray(driver.timeOff) && driver.timeOff.indexOf(dateIso)!==-1;
 }
+
+// Mirrors reassignBlocksOffTruck: when a driver is marked off for some date range, pull them
+// off any block they're already on within that range (today or later only -- past days are
+// left alone) and try to hand each freed block to another eligible driver automatically,
+// using the same rules as "Assign Drivers".
+function reassignBlocksOffDriver(driver, fromISO, toISO){
+  const todayISO = fmtISO(toDateOnly(new Date()));
+  const rangeStart = fromISO > todayISO ? fromISO : todayISO;
+  if(rangeStart > toISO) return;
+
+  const affected = STATE.blocks.filter(function(b){
+    return !b.rejected && b.driverName && b.driverName.trim().toLowerCase()===driver.name.trim().toLowerCase()
+      && b.date>=rangeStart && b.date<=toISO;
+  }).sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
+
+  if(affected.length===0) return;
+
+  let reassigned=0, freed=0;
+  affected.forEach(function(b){
+    b.driverName = null;
+    const matches = STATE.drivers.filter(function(d2){
+      if(d2.id===driver.id) return false;
+      const days = Array.isArray(d2.workDays) ? d2.workDays : [];
+      const times = Array.isArray(d2.tripTimes) ? d2.tripTimes : [];
+      const types = Array.isArray(d2.allowedTypes) ? d2.allowedTypes : ['solo1','solo2','solo5'];
+      if(days.indexOf(b.dayIndex)===-1) return false;
+      if(types.indexOf(b.type)===-1) return false;
+      if(times.length>0 && times.indexOf(b.anchorTime)===-1) return false;
+      if(driverOnTimeOff(d2, b.date)) return false;
+      if(checkDriverConflict(d2.name, Object.assign({}, b, {driverName: d2.name}))) return false;
+      if(driverHOSViolation(d2.name, Object.assign({}, b, {driverName: d2.name}))) return false;
+      if(driverWeeklyConsumedHours(d2.name) + (HOS_CONSUMED_HOURS[b.type]||0) > HOS_WEEKLY_LIMIT_HOURS) return false;
+      return true;
+    }).sort(function(a,c){
+      const aDays = Array.isArray(a.workDays) ? a.workDays.length : 7;
+      const cDays = Array.isArray(c.workDays) ? c.workDays.length : 7;
+      if(aDays !== cDays) return aDays - cDays;
+      return a.name.localeCompare(c.name);
+    });
+    if(matches.length>0){ b.driverName = matches[0].name; reassigned++; }
+    else freed++;
+  });
+
+  logAction(driver.name+' marked off '+fromISO+(toISO!==fromISO?(' to '+toISO):'')+': reassigned '+reassigned+' block(s), '+freed+' left needing a driver');
+  showToast(driver.name+' is off \u2014 '+reassigned+' block(s) moved to another driver'+(freed?(', '+freed+' still need one'):''));
+}
 function assignDriversAutomatically(){
   const candidates = currentWeekBlocks().filter(function(b){ return !b.rejected && !b.driverName; })
     .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); }); // chronological, so HOS accumulation makes sense as we go
@@ -2718,6 +2764,15 @@ function renderCalendarDayModal(){
           cursor = addDays(cursor,1);
         }
         logAction('Added '+added+' day(s) off for '+driver.name+' ('+from+(to!==from?(' to '+to):'')+')');
+        saveState();
+        // Pull the driver off anything they're already on in this range (today or later)
+        // and try to hand each freed block to another eligible driver automatically.
+        const hadExistingAssignments = STATE.blocks.some(function(b){
+          return !b.rejected && b.driverName && b.driverName.trim().toLowerCase()===driver.name.trim().toLowerCase()
+            && b.date>=from && b.date<=to;
+        });
+        reassignBlocksOffDriver(driver, from, to);
+        if(!hadExistingAssignments) showToast('Marked '+driver.name+' off '+from+(to!==from?(' to '+to):''));
         saveState(); render();
       }}, '+ Add time off')
     ]));
