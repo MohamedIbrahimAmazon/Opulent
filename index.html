@@ -1021,6 +1021,15 @@ function render(){
   }
 }
 
+const MODE_PREF_KEY = 'board-mode-pref';
+// Switches page/tab and remembers it (per browser) so a refresh reopens the same page
+// instead of always dropping you back on Board.
+function setMode(m){
+  VIEW.mode = m;
+  try{ localStorage.setItem(MODE_PREF_KEY, m); }catch(e){}
+  render();
+}
+
 function renderSetPasswordScreen(){
   const passInput = el('input',{type:'password', placeholder:'Choose a password (min 6 characters)', autocomplete:'new-password', id:'newPassword'});
   const confirmInput = el('input',{type:'password', placeholder:'Confirm password', autocomplete:'new-password', id:'newPasswordConfirm'});
@@ -1467,12 +1476,12 @@ function renderHeader(){
     upload,
     el('button',{class:'btn primary', title:'Auto-fill drivers on this week\u2019s unassigned blocks, using each driver\u2019s schedule', onclick:function(){ assignDriversAutomatically(); }}, '\ud83e\udd16 Assign Drivers'),
     el('button',{class:'btn primary', title:'Auto-fill trucks for blocks that have a driver but no truck yet', onclick:function(){ assignTrucksAutomatically(); }}, '\ud83d\ude9a Assign Trucks'),
-    el('button',{class:'btn'+(VIEW.mode==='board'?' active-mode':''), onclick:function(){VIEW.mode='board'; render();}}, '\ud83d\udcc5 Board'),
-    el('button',{class:'btn'+(VIEW.mode==='timeline'?' active-mode':''), onclick:function(){VIEW.mode='timeline'; render();}}, '\ud83d\udcca Timeline'),
-    el('button',{class:'btn'+(VIEW.mode==='drivers'?' active-mode':''), onclick:function(){VIEW.mode='drivers'; render();}}, '\ud83d\udc64 Drivers'),
-    el('button',{class:'btn'+(VIEW.mode==='calendar'?' active-mode':''), title:'Manage driver vacation / time-off days', onclick:function(){VIEW.mode='calendar'; render();}}, '\ud83d\udcc5\ufe0f Calendar'),
+    el('button',{class:'btn'+(VIEW.mode==='board'?' active-mode':''), onclick:function(){setMode('board');}}, '\ud83d\udcc5 Board'),
+    el('button',{class:'btn'+(VIEW.mode==='timeline'?' active-mode':''), onclick:function(){setMode('timeline');}}, '\ud83d\udcca Timeline'),
+    el('button',{class:'btn'+(VIEW.mode==='drivers'?' active-mode':''), onclick:function(){setMode('drivers');}}, '\ud83d\udc64 Drivers'),
+    el('button',{class:'btn'+(VIEW.mode==='calendar'?' active-mode':''), title:'Manage driver vacation / time-off days', onclick:function(){setMode('calendar');}}, '\ud83d\udcc5\ufe0f Calendar'),
     el('button',{class:'btn', onclick:function(){VIEW.showTrucks=true; render();}}, '\ud83d\ude9a Trucks'),
-    el('button',{class:'btn', title:'View and restore previous saved versions', onclick:function(){ openHistory(); }}, '\ud83d\udd50 History'),
+    isAdmin() ? el('button',{class:'btn', title:'View and restore previous saved versions', onclick:function(){ openHistory(); }}, '\ud83d\udd50 History') : null,
     isAdmin() ? el('button',{class:'btn', title:'See who did what, and when', onclick:function(){ openActivityLog(); }}, '\ud83d\udcdd Activity') : null,
     isAdmin() ? el('button',{class:'btn', title:'Invite a new person by email', onclick:function(){ promptInvite(); }}, '\u2795 Invite') : null,
     el('button',{class:'btn', title:'Download a PDF of this week\u2019s driver / type / truck assignments', onclick:function(){ downloadAssignmentPDF(); }}, '\ud83d\udcc4 Download PDF'),
@@ -2615,10 +2624,10 @@ function renderDriversPage(){
     const upcomingOff = d.timeOff.filter(function(iso){ return iso >= fmtISO(toDateOnly(new Date())); }).sort();
     const timeOffWrap = upcomingOff.length>0
       ? el('button',{class:'btn small', style:'padding:3px 8px; font-size:10.5px;', title:upcomingOff.join(', '),
-          onclick:function(){ VIEW.mode='calendar'; VIEW.calendarDayModal=upcomingOff[0]; render(); }
+          onclick:function(){ VIEW.calendarDayModal=upcomingOff[0]; setMode('calendar'); }
         }, '\ud83c\udf34 '+upcomingOff.length+' upcoming')
       : el('button',{class:'btn small', style:'padding:3px 8px; font-size:10.5px; color:var(--text-faint);', title:'Manage in the Calendar tab',
-          onclick:function(){ VIEW.mode='calendar'; render(); }
+          onclick:function(){ setMode('calendar'); }
         }, 'None set');
     const tr = el('tr',{},[
       el('td',{}, d.name),
@@ -3022,12 +3031,13 @@ function closeAnyOpenModal(){
   if(VIEW.showHistory){ VIEW.showHistory=false; closed=true; }
   if(VIEW.showActivity){ VIEW.showActivity=false; closed=true; }
   if(VIEW.showPdfOptions){ VIEW.showPdfOptions=false; closed=true; }
+  if(VIEW.calendarDayModal){ VIEW.calendarDayModal=null; closed=true; }
   if(closed) render();
   return closed;
 }
 
 function focusSearchBox(){
-  if(VIEW.mode!=='board'){ VIEW.mode='board'; render(); }
+  if(VIEW.mode!=='board'){ setMode('board'); }
   setTimeout(function(){
     const el2 = document.getElementById('searchInput');
     if(el2){ el2.focus(); el2.select(); }
@@ -3049,6 +3059,10 @@ document.addEventListener('keydown', function(e){
 (async function init(){
   VIEW.weekStart = getWeekStart(new Date());
   VIEW.calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  try{
+    const savedMode = localStorage.getItem(MODE_PREF_KEY);
+    if(savedMode && ['board','timeline','drivers','calendar'].indexOf(savedMode)!==-1) VIEW.mode = savedMode;
+  }catch(e){}
   initLocalTheme();
   if(!sb){
     // Local/no-auth mode: nothing to gate, just load and go.
