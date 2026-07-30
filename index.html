@@ -410,6 +410,7 @@ function isAdmin(){ return !!(currentUser && currentUser.email && currentUser.em
 let suppressRealtime = false; // avoids re-rendering off our own write
 let lastKnownUpdatedAt = null; // for optimistic-concurrency check before overwriting
 let lastKnownUpdatedBy = null; // which account made the last save -- only warn about "someone else" if this differs
+let isBoardLoading = true; // true until the shared board_state has actually been fetched, so new users see a loading screen instead of a briefly-empty board
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
@@ -541,6 +542,7 @@ async function setNewPassword(password){
     try{ window.history.replaceState(null, '', window.location.pathname); }catch(e){}
     render();
     await loadState();
+    isBoardLoading = false;
     subscribeRealtime();
     render();
   }catch(e){
@@ -557,6 +559,7 @@ async function signIn(email, password){
     currentUser = { id: data.user.id, email: data.user.email };
     render();
     await loadState();
+    isBoardLoading = false;
     subscribeRealtime();
     render();
   }catch(e){
@@ -569,6 +572,7 @@ async function signOut(){
   if(!sb) return;
   try{ await sb.auth.signOut(); }catch(e){}
   currentUser = null;
+  isBoardLoading = true;
   render();
 }
 
@@ -656,15 +660,19 @@ function saveState(opts){
   saveTimer = setTimeout(async ()=>{
     if(sb){
       try{
-        // Optimistic-concurrency check: only warn if the last save was made by a DIFFERENT
-        // account than the one currently signed in. Comparing by account (not just timing)
-        // means the same person doing several quick edits in a row never trips this warning
-        // -- it only fires when it's genuinely someone else's change.
+        // Optimistic-concurrency check: only warn if the DB has a save we genuinely haven't
+        // seen yet. lastKnownUpdatedAt is kept in sync by the realtime subscription every time
+        // ANY save (ours or someone else's) comes through, so if it already matches the DB's
+        // timestamp, our local copy is caught up and it's safe to save -- no matter who made
+        // that last save. This avoids falsely blocking a user just because someone else
+        // (e.g. an active admin) happens to be the most recent writer; it only blocks when
+        // this client's connection actually missed an update (realtime dropped, or hasn't
+        // loaded since).
         if(!opts.force){
           const { data: current, error: checkErr } = await sb.from('board_state').select('updated_at, updated_by').eq('id', BOARD_ROW_ID).maybeSingle();
-          const currentBy = current ? (current.updated_by || null) : null;
-          const isDifferentAccount = currentBy && currentUser && currentBy.toLowerCase() !== currentUser.email.toLowerCase();
-          if(!checkErr && isDifferentAccount){
+          const currentAt = current ? (current.updated_at || null) : null;
+          const isStale = !!(currentAt && lastKnownUpdatedAt && currentAt !== lastKnownUpdatedAt);
+          if(!checkErr && isStale){
             showConflictWarning();
             return;
           }
@@ -979,6 +987,11 @@ function renderInner(){
     return;
   }
 
+  if(isBoardLoading){
+    app.appendChild(renderLoadingScreen());
+    return;
+  }
+
   app.appendChild(renderHeader());
   app.appendChild(renderLegend());
   app.appendChild(renderTodaySummary());
@@ -1055,6 +1068,17 @@ function renderSetPasswordScreen(){
       el('button',{class:'btn primary', style:'width:100%; justify-content:center; padding:11px;', onclick:submit}, 'Set Password & Continue')
     ])
   ]);
+}
+
+function renderLoadingScreen(){
+  return el('div',{class:'login-wrap'},
+    el('div',{class:'login-card', style:'text-align:center;'},[
+      el('div',{class:'brand', style:'justify-content:center; margin-bottom:18px;'},[
+        el('div',{class:'mark'}, el('img',{src:LOGO_DATA_URI, alt:'Opulent Transport logo'}))
+      ]),
+      el('div',{style:'color:var(--text-dim); font-size:13px;'}, 'Loading the board\u2026')
+    ])
+  );
 }
 
 function renderLoginScreen(){
@@ -3069,6 +3093,7 @@ document.addEventListener('keydown', function(e){
   if(!sb){
     // Local/no-auth mode: nothing to gate, just load and go.
     await loadState();
+    isBoardLoading = false;
     render();
     return;
   }
@@ -3076,6 +3101,7 @@ document.addEventListener('keydown', function(e){
   render();
   if(currentUser && !needsPasswordSetup){
     await loadState();
+    isBoardLoading = false;
     subscribeRealtime();
     render();
   }
