@@ -1957,11 +1957,18 @@ function renderTimeline(){
 function renderBoard(){
   const board = el('div',{class:'board'});
   const today = fmtISO(toDateOnly(new Date()));
+  const isSearching = VIEW.searchQuery.trim().length>0;
+  let anyMatchThisWeek = false;
   for(let i=0;i<7;i++){
     const date = addDays(VIEW.weekStart, i);
     const iso = fmtISO(date);
     const allDayBlocks = currentWeekBlocks().filter(function(b){ return b.dayIndex===i; });
     const dayBlocks = allDayBlocks.filter(blockMatchesSearch).filter(blockMatchesTruckFilter);
+    // While actively searching, don't render this day at all (no header, no stats, no
+    // shortage/spare box) unless it actually has a matching block -- searching should show
+    // only the thing being searched for, not every day of the week around it.
+    if(isSearching && dayBlocks.length===0) continue;
+    if(dayBlocks.length>0) anyMatchThisWeek = true;
     const activeDayBlocks = allDayBlocks.filter(function(b){ return !b.rejected; });
     const rejectedCount = allDayBlocks.length - activeDayBlocks.length;
     const shortage = truckShortageForDay(date);
@@ -1999,9 +2006,12 @@ function renderBoard(){
         group.forEach(function(b){ body.appendChild(renderCard(b)); });
       });
     }
-    body.appendChild(el('button',{class:'add-block-btn', onclick:function(){ addManualBlock(i, iso); }}, '+ Add manual block'));
+    if(!isSearching) body.appendChild(el('button',{class:'add-block-btn', onclick:function(){ addManualBlock(i, iso); }}, '+ Add manual block'));
     col.appendChild(body);
     board.appendChild(col);
+  }
+  if(isSearching && !anyMatchThisWeek){
+    board.appendChild(el('div',{class:'day-empty', style:'padding:40px; width:100%; text-align:center;'}, 'No blocks match "'+VIEW.searchQuery.trim()+'" this week'));
   }
   return board;
 }
