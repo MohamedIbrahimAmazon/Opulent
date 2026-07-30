@@ -1908,9 +1908,28 @@ function renderTodaySummary(){
   ]);
 }
 
+// Selecting/deselecting a block never changes which drivers or trucks are eligible on any
+// OTHER card (those dropdowns re-run conflict/HOS checks across every block, which is the
+// expensive part of a full render() and is pointless work for a pure selection toggle). So
+// this patches just the bulk-action bar in place instead of calling render() -- selecting a
+// block stays instant even on a board with hundreds of blocks. Falls back to a full render()
+// only for the one moment the bar needs to appear or disappear from the layout.
+function updateBlockBulkBarOnly(){
+  const existing = document.querySelector('.block-bulk-bar');
+  if(VIEW.selectedBlockIds.length===0){
+    if(existing) existing.remove(); else render();
+    return;
+  }
+  if(existing){
+    existing.replaceWith(renderBlockBulkBar());
+  } else {
+    render();
+  }
+}
+
 function renderBlockBulkBar(){
   const n = VIEW.selectedBlockIds.length;
-  const bar = el('div',{class:'bulk-bar'});
+  const bar = el('div',{class:'bulk-bar block-bulk-bar'});
   bar.appendChild(el('span',{style:'font-size:12px; color:var(--text-dim);'}, n+' block'+(n===1?'':'s')+' selected'));
   bar.appendChild(el('button',{class:'btn small', onclick:function(){
     const ids = VIEW.selectedBlockIds.slice();
@@ -2139,7 +2158,7 @@ function renderCard(b){
     onchange:function(e){
       if(e.target.checked) VIEW.selectedBlockIds.push(b.id);
       else VIEW.selectedBlockIds = VIEW.selectedBlockIds.filter(function(x){ return x!==b.id; });
-      render();
+      updateBlockBulkBarOnly();
     }});
 
   card.appendChild(el('div',{class:'row1'},[
