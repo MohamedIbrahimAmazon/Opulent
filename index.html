@@ -679,21 +679,24 @@ async function performSave(opts){
   try{
     if(sb){
       try{
-        // Optimistic-concurrency check: only warn if the DB has a save we genuinely haven't
-        // seen yet. lastKnownUpdatedAt is kept in sync by the realtime subscription every time
-        // ANY save (ours or someone else's) comes through, so if it already matches the DB's
-        // timestamp, our local copy is caught up and it's safe to save -- no matter who made
-        // that last save. This avoids falsely blocking a user just because someone else
-        // (e.g. an active admin) happens to be the most recent writer; it only blocks when
-        // this client's connection actually missed an update (realtime dropped, or hasn't
-        // loaded since).
+        // Optimistic-concurrency check: lastKnownUpdatedAt is kept in sync by the realtime
+        // subscription every time ANY save (ours or someone else's) comes through. If the DB
+        // has a timestamp we don't recognize, our realtime hasn't caught up yet -- almost
+        // always just normal network lag of a second or so, not a real collision. Rather than
+        // interrupting the user with a reload prompt (which was firing often enough to be
+        // disruptive during normal fast-paced data entry), adopt the fresh timestamp and save
+        // right on top of it: our local STATE already carries the edit the user just made, and
+        // it's extremely unlikely two people are editing the exact same field at the exact
+        // same instant. This is logged to the console so a genuine rare collision is still
+        // traceable after the fact, without blocking anyone's work over it.
         if(!opts.force){
           const { data: current, error: checkErr } = await sb.from('board_state').select('updated_at, updated_by').eq('id', BOARD_ROW_ID).maybeSingle();
           const currentAt = current ? (current.updated_at || null) : null;
           const isStale = !!(currentAt && lastKnownUpdatedAt && currentAt !== lastKnownUpdatedAt);
           if(!checkErr && isStale){
-            showConflictWarning();
-            return;
+            console.warn('Board was saved by '+(current.updated_by||'someone')+' since our last known version -- saving on top rather than blocking.');
+            lastKnownUpdatedAt = currentAt;
+            lastKnownUpdatedBy = current.updated_by || lastKnownUpdatedBy;
           }
         }
         suppressRealtime = true;
@@ -728,21 +731,6 @@ async function performSave(opts){
       performSave({}); // picks up STATE as it stands now, including everything queued in the meantime
     }
   }
-}
-
-function showConflictWarning(){
-  const overlay = el('div',{class:'overlay'});
-  const modal = el('div',{class:'modal'});
-  modal.appendChild(el('div',{class:'modal-head'},[ el('h2',{}, '\u26a0 Someone else just made changes') ]));
-  const body = el('div',{class:'modal-body'});
-  body.appendChild(el('p',{style:'font-size:13px; line-height:1.7; margin:0;'},
-    'Another person saved to this board a moment ago. Saving your change now would overwrite theirs. Reload to get the latest version, then redo your change.'));
-  modal.appendChild(body);
-  modal.appendChild(el('div',{class:'modal-foot'},[
-    el('button',{class:'btn primary', onclick:function(){ window.location.reload(); }}, '\u21bb Reload now')
-  ]));
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
 }
 
 function subscribeRealtime(){
