@@ -281,11 +281,12 @@
   .card .block-select{ margin-top:3px; cursor:pointer; }
   .card .time{ font-family:'Oswald',sans-serif; font-size:16px; font-weight:600; color:var(--amber); letter-spacing:0.02em; }
   .card .endtime{ font-size:10px; color:var(--text-faint); margin-top:1px; font-family:'JetBrains Mono',monospace; }
-  .actual-end-row{ display:flex; align-items:center; gap:6px; margin-top:7px; }
-  .actual-end-label{ font-size:10px; color:var(--text-faint); white-space:nowrap; }
-  .actual-end-input{ font-size:11px; padding:4px 6px; background:var(--bg-panel); border:1px solid var(--line); color:var(--text-dim); border-radius:6px; flex:1; min-width:0; font-family:'JetBrains Mono',monospace; }
+  .actual-end-row{ display:flex; flex-direction:column; align-items:stretch; gap:3px; margin-top:8px; }
+  .actual-end-toprow{ display:flex; align-items:center; justify-content:space-between; gap:6px; }
+  .actual-end-label{ font-size:10px; color:var(--text-faint); white-space:nowrap; text-transform:uppercase; letter-spacing:0.03em; }
+  .actual-end-input{ font-size:12.5px; padding:6px 7px; background:var(--bg-panel); border:1px solid var(--line); color:var(--text-dim); border-radius:6px; width:100%; font-family:'JetBrains Mono',monospace; }
   .actual-end-input:not(:placeholder-shown), .actual-end-input[value]:not([value=""]){ border-color:var(--amber-dim); color:var(--text); }
-  .actual-end-clear{ background:none; border:none; color:var(--text-faint); cursor:pointer; font-size:12px; padding:2px 4px; line-height:1; }
+  .actual-end-clear{ background:none; border:none; color:var(--text-faint); cursor:pointer; font-size:10px; padding:2px 2px; line-height:1; }
   .actual-end-clear:hover{ color:var(--red); }
   .card .typebadge{
     font-size:9.5px; padding:2px 6px; border-radius:5px; font-weight:600; letter-spacing:0.03em;
@@ -2433,7 +2434,14 @@ function renderCard(b){
   }
 
   card.appendChild(el('div',{class:'actual-end-row'},[
-    el('label',{class:'actual-end-label'}, 'Actual end'),
+    el('div',{class:'actual-end-toprow'},[
+      el('label',{class:'actual-end-label'}, 'Actual end'),
+      b.actualEnd ? el('button',{class:'actual-end-clear', title:'Clear actual end', onclick:function(){
+        b.actualEnd = null;
+        logAction('Cleared actual end on block '+(b.blockId||b.id));
+        saveState(); render();
+      }}, '\u2715 Clear') : null
+    ]),
     el('input',{type:'datetime-local', class:'actual-end-input', lang:'en-GB', value: b.actualEnd||'', title:'If the trip actually ended at a different time than scheduled, set it here \u2014 rest time, cycle hours and Timeline all use this instead of the scheduled end once set.',
       onchange:function(e){
         const prev = b.actualEnd;
@@ -2441,12 +2449,7 @@ function renderCard(b){
         logAction('Set actual end on block '+(b.blockId||b.id)+' to '+(b.actualEnd || 'scheduled (cleared)'));
         saveState(); render();
       }
-    }),
-    b.actualEnd ? el('button',{class:'actual-end-clear', title:'Clear actual end', onclick:function(){
-      b.actualEnd = null;
-      logAction('Cleared actual end on block '+(b.blockId||b.id));
-      saveState(); render();
-    }}, '\u2715') : null
+    })
   ]));
 
   const noteInput = el('input',{class:'block-note', value: b.note||'', placeholder:'+ Add note\u2026',
