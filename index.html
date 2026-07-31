@@ -281,6 +281,10 @@
   .card .block-select{ margin-top:3px; cursor:pointer; }
   .card .time{ font-family:'Oswald',sans-serif; font-size:16px; font-weight:600; color:var(--amber); letter-spacing:0.02em; }
   .card .endtime{ font-size:10px; color:var(--text-faint); margin-top:1px; font-family:'JetBrains Mono',monospace; }
+  .actual-end-row{ display:flex; align-items:center; gap:4px; margin-top:3px; }
+  .actual-end-label{ font-size:9px; color:var(--text-faint); white-space:nowrap; }
+  .actual-end-input{ font-size:10px; padding:1px 3px; background:var(--bg-card); border:1px solid var(--line); color:var(--text-dim); border-radius:4px; max-width:150px; font-family:'JetBrains Mono',monospace; }
+  .actual-end-input:not(:placeholder-shown), .actual-end-input[value]:not([value=""]){ border-color:var(--amber-dim); color:var(--text); }
   .card .typebadge{
     font-size:9.5px; padding:2px 6px; border-radius:5px; font-weight:600; letter-spacing:0.03em;
     background: rgba(52,195,176,0.15); color:var(--teal); user-select:none;
@@ -504,14 +508,26 @@ function parseCsvDT(str){
 }
 function timeToMinutes(hhmm){ const p = hhmm.split(':'); return (+p[0])*60+(+p[1]); }
 function blockStartDT(b){ const d = new Date(b.date+'T00:00:00'); const p = b.anchorTime.split(':'); d.setHours(+p[0],+p[1],0,0); return d; }
-function blockEndDT(b){ return new Date(blockStartDT(b).getTime() + DUR[b.type]*60000); }
+// The nominal/scheduled end, purely from the block's type duration.
+function blockNominalEndDT(b){ return new Date(blockStartDT(b).getTime() + DUR[b.type]*60000); }
+// The end used everywhere (conflicts, 10h rest, cycle-hour tracking, Timeline): if an actual
+// end time has been logged for this block, that's the real-world truth and takes over from
+// the nominal scheduled end for every downstream calculation.
+function blockEndDT(b){
+  if(b.actualEnd){
+    const d = new Date(b.actualEnd);
+    if(!isNaN(d.getTime())) return d;
+  }
+  return blockNominalEndDT(b);
+}
 function fmtEndLabel(b){
   const end = blockEndDT(b);
   const endISO = fmtISO(new Date(end.getFullYear(), end.getMonth(), end.getDate()));
   const hh = String(end.getHours()).padStart(2,'0');
   const mm = String(end.getMinutes()).padStart(2,'0');
   const time = hh+':'+mm;
-  return endISO===b.date ? ('Ends '+time) : ('Ends '+time+' \u00b7 '+fmtShort(end));
+  const label = endISO===b.date ? ('Ends '+time) : ('Ends '+time+' \u00b7 '+fmtShort(end));
+  return b.actualEnd ? (label+' (actual)') : label;
 }
 
 async function checkAuth(){
@@ -1616,6 +1632,7 @@ function reassignBlocksOffDriver(driver, fromISO, toISO){
     b.driverName = null;
     const matches = STATE.drivers.filter(function(d2){
       if(d2.id===driver.id) return false;
+      if(d2.active===false) return false;
       const days = Array.isArray(d2.workDays) ? d2.workDays : [];
       const times = Array.isArray(d2.tripTimes) ? d2.tripTimes : [];
       const types = Array.isArray(d2.allowedTypes) ? d2.allowedTypes : ['solo1','solo2','solo5'];
@@ -1625,7 +1642,6 @@ function reassignBlocksOffDriver(driver, fromISO, toISO){
       if(driverOnTimeOff(d2, b.date)) return false;
       if(checkDriverConflict(d2.name, Object.assign({}, b, {driverName: d2.name}))) return false;
       if(driverHOSViolation(d2.name, Object.assign({}, b, {driverName: d2.name}))) return false;
-      if(driverWeeklyConsumedHours(d2.name) + (HOS_CONSUMED_HOURS[b.type]||0) > HOS_WEEKLY_LIMIT_HOURS) return false;
       return true;
     }).sort(function(a,c){
       const aDays = Array.isArray(a.workDays) ? a.workDays.length : 7;
@@ -1646,6 +1662,7 @@ function assignDriversAutomatically(){
   let assigned=0, noMatch=0, hosBlocked=0, onLeave=0;
   candidates.forEach(function(b){
     const matches = STATE.drivers.filter(function(d){
+      if(d.active===false) return false;
       const days = Array.isArray(d.workDays) ? d.workDays : [];
       const times = Array.isArray(d.tripTimes) ? d.tripTimes : [];
       const types = Array.isArray(d.allowedTypes) ? d.allowedTypes : ['solo1','solo2','solo5'];
@@ -1656,16 +1673,23 @@ function assignDriversAutomatically(){
       if(driverOnTimeOff(d, b.date)) return false;
       // Must actually be free at this time (no overlapping block already on them).
       if(checkDriverConflict(d.name, Object.assign({}, b, {driverName: d.name}))) return false;
-      // Must not break the 10h rest rule or the 70h/8-day rolling cycle cap.
+      // Must not break the 10h rest rule or the 70h/8-day rolling cycle cap (this already
+      // correctly resets to a fresh 70h the moment there's a 34h+ gap since their last block).
       if(driverHOSViolation(d.name, Object.assign({}, b, {driverName: d.name}))) return false;
-      // Explicit simple guard: never exceed 70h of actual work within this calendar week.
-      if(driverWeeklyConsumedHours(d.name) + (HOS_CONSUMED_HOURS[b.type]||0) > HOS_WEEKLY_LIMIT_HOURS) return false;
       return true;
     });
     if(matches.length>0){
       // Most-constrained driver first: fewest work days wins, ties broken alphabetically
-      // for a stable, predictable result.
+      // for a stable, predictable result. But first: a driver whose preferred truck is a
+      // Sleeper gets priority on Solo 2 blocks (keeps them with their own equipment) --
+      // Solo 1 is only ever a secondary/fallback fit for them since a Sleeper can't run it
+      // anyway, so they'd need a different truck for that regardless.
       matches.sort(function(a,c){
+        if(b.type==='solo2'){
+          const aSleeperPref = a.preferredTruckId && (function(){ const t=STATE.trucks.find(function(x){return x.id===a.preferredTruckId;}); return t && t.vehicleType==='sleeper'; })();
+          const cSleeperPref = c.preferredTruckId && (function(){ const t=STATE.trucks.find(function(x){return x.id===c.preferredTruckId;}); return t && t.vehicleType==='sleeper'; })();
+          if(aSleeperPref !== cSleeperPref) return aSleeperPref ? -1 : 1;
+        }
         const aDays = Array.isArray(a.workDays) ? a.workDays.length : 7;
         const cDays = Array.isArray(c.workDays) ? c.workDays.length : 7;
         if(aDays !== cDays) return aDays - cDays;
@@ -1745,11 +1769,9 @@ function reassignBlocksOffTruck(truck){
 }
 
 function assignTrucksAutomatically(){
-  // Note: no longer requires a driver to already be set. The "preferred truck" tier below
-  // still only applies when there IS a driver (since preferred truck is a property of the
-  // driver), but the fallback and closest-time tiers work purely off the block's own type and
-  // time -- so running this before or after "Assign Drivers" both work correctly.
-  const candidates = currentWeekBlocks().filter(function(b){ return !b.rejected && !b.truckId; })
+  // Only fills trucks onto blocks that already have a driver assigned. Run "Assign Drivers"
+  // first (or assign the driver manually) if a block still shows "Needs truck" after this.
+  const candidates = currentWeekBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
     .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
   let assignedPreferred=0, assignedFallback=0, assignedClosest=0, noneAvailable=0, noPreferredSet=0;
 
@@ -1783,7 +1805,7 @@ function assignTrucksAutomatically(){
   }
 
   candidates.forEach(function(b){
-    const driver = b.driverName ? STATE.drivers.find(function(d){ return d.name.trim().toLowerCase()===b.driverName.trim().toLowerCase(); }) : null;
+    const driver = STATE.drivers.find(function(d){ return d.name.trim().toLowerCase()===b.driverName.trim().toLowerCase(); });
     let usedFallback = false;
     let chosen = null;
 
@@ -1814,7 +1836,7 @@ function assignTrucksAutomatically(){
   // only, never crossed, but picking whichever remaining truck's own schedule sits closest to
   // this block's time instead of leaving it empty.
   if(noneAvailable>0){
-    const stillShort = currentWeekBlocks().filter(function(b){ return !b.rejected && !b.truckId; })
+    const stillShort = currentWeekBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
       .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
     stillShort.forEach(function(b){
       const closestCandidates = STATE.trucks.filter(function(t){ return truckUsableIgnoringTime(t, b); })
@@ -2272,7 +2294,18 @@ function renderCard(b){
       selectCb,
       el('div',{},[
         el('div',{class:'time mono'}, b.anchorTime),
-        el('div',{class:'endtime'}, fmtEndLabel(b))
+        el('div',{class:'endtime'}, fmtEndLabel(b)),
+        el('div',{class:'actual-end-row'},[
+          el('label',{class:'actual-end-label'}, 'Actual end'),
+          el('input',{type:'datetime-local', class:'actual-end-input', value: b.actualEnd||'', title:'If the trip actually ended at a different time than scheduled, set it here \u2014 rest time, cycle hours and Timeline all use this instead of the scheduled end once set.',
+            onchange:function(e){
+              const prev = b.actualEnd;
+              b.actualEnd = e.target.value || null;
+              logAction('Set actual end on block '+(b.blockId||b.id)+' to '+(b.actualEnd || 'scheduled (cleared)'));
+              saveState(); render();
+            }
+          })
+        ])
       ])
     ]),
     typeBadge
@@ -2342,6 +2375,7 @@ function renderCard(b){
   driverSel.appendChild(el('option',{value:''}, '\u2014 No driver \u2014'));
   STATE.drivers.slice().sort(function(a,b2){ return a.name.localeCompare(b2.name); }).forEach(function(d){
     if(d.name!==b.driverName){
+      if(d.active===false) return;
       if(driverOnTimeOff(d, b.date)) return;
       const test = Object.assign({}, b, {driverName: d.name});
       if(checkDriverConflict(d.name, test)) return;
