@@ -281,10 +281,23 @@
   .card .block-select{ margin-top:3px; cursor:pointer; }
   .card .time{ font-family:'Oswald',sans-serif; font-size:16px; font-weight:600; color:var(--amber); letter-spacing:0.02em; }
   .card .endtime{ font-size:10px; color:var(--text-faint); margin-top:1px; font-family:'JetBrains Mono',monospace; }
-  .actual-end-row{ display:flex; align-items:center; gap:4px; margin-top:3px; }
-  .actual-end-label{ font-size:9px; color:var(--text-faint); white-space:nowrap; }
-  .actual-end-input{ font-size:10px; padding:1px 3px; background:var(--bg-card); border:1px solid var(--line); color:var(--text-dim); border-radius:4px; max-width:150px; font-family:'JetBrains Mono',monospace; }
-  .actual-end-input:not(:placeholder-shown), .actual-end-input[value]:not([value=""]){ border-color:var(--amber-dim); color:var(--text); }
+  .actual-end-toggle{
+    background:none; border:none; padding:0; margin-top:2px; cursor:pointer;
+    font-size:9.5px; color:var(--text-faint); text-decoration:underline; text-underline-offset:2px;
+  }
+  .actual-end-toggle:hover{ color:var(--amber); }
+  .actual-end-row{ display:flex; align-items:center; gap:3px; margin-top:2px; }
+  .actual-end-input{
+    color-scheme: dark; font-size:9.5px; padding:1px 3px; line-height:1.4;
+    background:var(--bg-card); border:1px solid var(--amber-dim); color:var(--text);
+    border-radius:4px; max-width:132px; font-family:'JetBrains Mono',monospace;
+  }
+  body.light .actual-end-input{ color-scheme: light; }
+  .actual-end-clear{
+    background:none; border:none; padding:0 2px; cursor:pointer; font-size:11px; line-height:1;
+    color:var(--text-faint);
+  }
+  .actual-end-clear:hover{ color:var(--red); }
   .card .typebadge{
     font-size:9.5px; padding:2px 6px; border-radius:5px; font-weight:600; letter-spacing:0.03em;
     background: rgba(52,195,176,0.15); color:var(--teal); user-select:none;
@@ -2289,23 +2302,42 @@ function renderCard(b){
       updateBlockBulkBarOnly();
     }});
 
+  const actualEndSlot = b.actualEnd
+    ? el('div',{class:'actual-end-row'},[
+        el('input',{type:'datetime-local', class:'actual-end-input', value: b.actualEnd, title:'Actual end time \u2014 used instead of the scheduled end for rest time, cycle hours and Timeline.',
+          onchange:function(e){
+            b.actualEnd = e.target.value || null;
+            logAction('Set actual end on block '+(b.blockId||b.id)+' to '+(b.actualEnd || 'scheduled (cleared)'));
+            saveState(); render();
+          }
+        }),
+        el('button',{class:'actual-end-clear', title:'Clear \u2014 use the scheduled end time again', onclick:function(){
+          b.actualEnd = null;
+          logAction('Cleared actual end on block '+(b.blockId||b.id)+', back to scheduled');
+          saveState(); render();
+        }}, '\u2715')
+      ])
+    : el('button',{class:'actual-end-toggle', type:'button', title:'Log the real end time if this trip didn\u2019t end exactly on schedule',
+        onclick:function(e){
+          const input = el('input',{type:'datetime-local', class:'actual-end-input',
+            onchange:function(ev){
+              b.actualEnd = ev.target.value || null;
+              if(b.actualEnd) logAction('Set actual end on block '+(b.blockId||b.id)+' to '+b.actualEnd);
+              saveState(); render();
+            }
+          });
+          e.target.replaceWith(input);
+          input.focus();
+        }
+      }, '\ud83d\udd50 Log actual end');
+
   card.appendChild(el('div',{class:'row1'},[
     el('div',{style:'display:flex; align-items:flex-start; gap:6px;'},[
       selectCb,
       el('div',{},[
         el('div',{class:'time mono'}, b.anchorTime),
         el('div',{class:'endtime'}, fmtEndLabel(b)),
-        el('div',{class:'actual-end-row'},[
-          el('label',{class:'actual-end-label'}, 'Actual end'),
-          el('input',{type:'datetime-local', class:'actual-end-input', value: b.actualEnd||'', title:'If the trip actually ended at a different time than scheduled, set it here \u2014 rest time, cycle hours and Timeline all use this instead of the scheduled end once set.',
-            onchange:function(e){
-              const prev = b.actualEnd;
-              b.actualEnd = e.target.value || null;
-              logAction('Set actual end on block '+(b.blockId||b.id)+' to '+(b.actualEnd || 'scheduled (cleared)'));
-              saveState(); render();
-            }
-          })
-        ])
+        actualEndSlot
       ])
     ]),
     typeBadge
