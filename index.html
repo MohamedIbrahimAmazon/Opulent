@@ -175,6 +175,9 @@
     padding:9px 12px; border-radius:8px; font-size:12px; cursor:pointer;
   }
   .stat{ background:var(--bg-panel); border:1px solid var(--line); border-radius:8px; padding:9px 14px; min-width:120px; }
+  .stat-clickable{ cursor:pointer; transition:border-color .15s, transform .1s; }
+  .stat-clickable:hover{ border-color:var(--amber-dim); }
+  .stat-clickable:active{ transform:scale(0.97); }
   .stat .n{ font-family:'Oswald',sans-serif; font-size:20px; font-weight:600; }
   .stat .l{ font-size:10.5px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.05em; margin-top:1px;}
   .stat.warn .n{ color:var(--red); }
@@ -263,6 +266,16 @@
   .card.solo2{ border-left-color: var(--violet); background: rgba(155,140,255,0.08); }
   .card.solo5{ border-left-color: var(--gold); background: rgba(242,183,5,0.10); }
   .card.conflict{ border-left-color: var(--red); box-shadow: 0 0 0 1px rgba(239,87,87,0.4); }
+  .card.needs-attention{ border-left-color: var(--amber); box-shadow: 0 0 0 1px rgba(232,163,61,0.5); animation: needs-attention-pulse 2.2s ease-in-out infinite; }
+  @keyframes needs-attention-pulse{
+    0%, 100% { box-shadow: 0 0 0 1px rgba(232,163,61,0.35); }
+    50% { box-shadow: 0 0 0 2px rgba(232,163,61,0.75); }
+  }
+  .needs-attention-tag{
+    display:inline-block; font-size:9.5px; font-weight:700; letter-spacing:0.03em; color:var(--amber);
+    background: rgba(232,163,61,0.14); border:1px solid rgba(232,163,61,0.4); border-radius:5px;
+    padding:2px 6px; margin-bottom:6px;
+  }
   .card .row1{ display:flex; align-items:flex-start; justify-content:space-between; gap:6px; }
   .card .block-select{ margin-top:3px; cursor:pointer; }
   .card .time{ font-family:'Oswald',sans-serif; font-size:16px; font-weight:600; color:var(--amber); letter-spacing:0.02em; }
@@ -1188,6 +1201,7 @@ function blockMatchesSearch(b){
 
 function blockMatchesTruckFilter(b){
   if(VIEW.truckTypeFilter==='all') return true;
+  if(VIEW.truckTypeFilter==='needs-attention') return !b.rejected && (!b.driverName || !b.truckId);
   if(!b.truckId) return false;
   const t = STATE.trucks.find(function(x){ return x.id===b.truckId; });
   if(!t) return false;
@@ -1210,6 +1224,7 @@ function renderSearchBar(){
   }
   const typeFilterSel = el('select',{class:'truck-type-filter', onchange:function(e){ VIEW.truckTypeFilter = e.target.value; render(); }},[
     el('option',{value:'all', selected: VIEW.truckTypeFilter==='all'?'selected':null}, '\ud83d\ude9a All truck types'),
+    el('option',{value:'needs-attention', selected: VIEW.truckTypeFilter==='needs-attention'?'selected':null}, '\u26a0 Needs driver or truck'),
     el('option',{value:'daycab', selected: VIEW.truckTypeFilter==='daycab'?'selected':null}, 'Daycab only'),
     el('option',{value:'sleeper', selected: VIEW.truckTypeFilter==='sleeper'?'selected':null}, 'Sleeper only'),
     el('option',{value:'solo5cap', selected: VIEW.truckTypeFilter==='solo5cap'?'selected':null}, 'Solo 5\u2011capable only')
@@ -1724,7 +1739,7 @@ function reassignBlocksOffTruck(truck){
 function assignTrucksAutomatically(){
   const candidates = currentWeekBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
     .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
-  let assignedPreferred=0, assignedFallback=0, noneAvailable=0, noPreferredSet=0;
+  let assignedPreferred=0, assignedFallback=0, assignedClosest=0, noneAvailable=0, noPreferredSet=0;
 
   function truckUsable(t, b){
     if(t.status!=='active') return false;
@@ -1733,6 +1748,26 @@ function assignTrucksAutomatically(){
     if(times.length>0 && times.indexOf(b.anchorTime)===-1) return false;
     if(checkConflict(t.id, Object.assign({}, b, {truckId: t.id}))) return false;
     return true;
+  }
+
+  // Relaxed check for the leftovers pass below: same vehicle-type-to-Solo-type rule and same
+  // free/no-conflict requirement, but does NOT require the truck's trip-time list to contain
+  // this exact anchor time -- a truck with no trip times set is fully flexible either way.
+  function truckUsableIgnoringTime(t, b){
+    if(t.status!=='active') return false;
+    if(!truckCanRunType(t, b.type)) return false;
+    if(checkConflict(t.id, Object.assign({}, b, {truckId: t.id}))) return false;
+    return true;
+  }
+  // How far (in minutes) a truck's closest configured trip time is from this block's anchor
+  // time. A truck with no trip times set is treated as fully flexible (distance 0, best fit).
+  function closestTimeDistance(t, b){
+    const times = Array.isArray(t.tripTimes) ? t.tripTimes : [];
+    if(times.length===0) return 0;
+    const anchorMin = timeToMinutes(b.anchorTime);
+    return times.reduce(function(best, tm){
+      return Math.min(best, Math.abs(timeToMinutes(tm)-anchorMin));
+    }, Infinity);
   }
 
   candidates.forEach(function(b){
@@ -1761,12 +1796,36 @@ function assignTrucksAutomatically(){
     }
   });
 
-  if(assignedPreferred+assignedFallback>0) saveState();
-  const total = assignedPreferred+assignedFallback;
-  logAction('Auto-assigned trucks: '+total+' filled ('+assignedPreferred+' preferred, '+assignedFallback+' fallback), '+noneAvailable+' none available');
+  // Second pass: whatever's still short a truck (usually a real truck shortage, or every
+  // compatible truck's trip-time list just didn't happen to include this exact time) gets
+  // filled from whatever's genuinely left -- still Daycab-to-Solo-1 / Sleeper-to-Solo-2(/5)
+  // only, never crossed, but picking whichever remaining truck's own schedule sits closest to
+  // this block's time instead of leaving it empty.
+  if(noneAvailable>0){
+    const stillShort = currentWeekBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
+      .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
+    stillShort.forEach(function(b){
+      const closestCandidates = STATE.trucks.filter(function(t){ return truckUsableIgnoringTime(t, b); })
+        .sort(function(a,c){
+          const da = closestTimeDistance(a, b), dc = closestTimeDistance(c, b);
+          if(da !== dc) return da - dc;
+          return a.number.localeCompare(c.number);
+        });
+      if(closestCandidates.length>0){
+        b.truckId = closestCandidates[0].id;
+        assignedClosest++;
+        noneAvailable--;
+      }
+    });
+  }
+
+  if(assignedPreferred+assignedFallback+assignedClosest>0) saveState();
+  const total = assignedPreferred+assignedFallback+assignedClosest;
+  logAction('Auto-assigned trucks: '+total+' filled ('+assignedPreferred+' preferred, '+assignedFallback+' fallback, '+assignedClosest+' closest-time), '+noneAvailable+' none available');
   showToast('Assigned '+total+' truck(s)'
     +(assignedFallback ? (' \u2014 '+assignedFallback+' used a fallback truck (preferred was unavailable)') : '')
-    +(noneAvailable ? (' \u2014 '+noneAvailable+' had no compatible truck free') : ''));
+    +(assignedClosest ? (' \u2014 '+assignedClosest+' used the closest-available truck (exact time wasn\u2019t free)') : '')
+    +(noneAvailable ? (' \u2014 '+noneAvailable+' had no compatible truck free at all') : ''));
   render();
 }
 
@@ -1974,8 +2033,8 @@ function renderBlockBulkBar(){
 
 function renderStats(){
   const blocks = currentWeekBlocks();
-  const unassignedTruck = blocks.filter(function(b){ return !b.truckId; }).length;
-  const unassignedDriver = blocks.filter(function(b){ return !b.driverName; }).length;
+  const unassignedTruck = blocks.filter(function(b){ return !b.rejected && !b.truckId; }).length;
+  const unassignedDriver = blocks.filter(function(b){ return !b.rejected && !b.driverName; }).length;
   const downTrucks = STATE.trucks.filter(function(t){ return t.status==='down'; }).length;
   const groundedTrucks = STATE.trucks.filter(function(t){ return t.status==='grounded'; }).length;
   const onDownTruck = blocks.filter(function(b){
@@ -1983,16 +2042,17 @@ function renderStats(){
     const t = STATE.trucks.find(function(x){ return x.id===b.truckId; });
     return t && t.status==='down';
   }).length;
-  const stat = function(n,l,cls){ return el('div',{class:'stat'+(cls?(' '+cls):'')},[
+  const stat = function(n,l,cls,onclick){ return el('div',{class:'stat'+(cls?(' '+cls):'')+(onclick?' stat-clickable':''), title: onclick?'Click to jump to these on the board':null, onclick:onclick},[
     el('div',{class:'n disp'}, String(n)), el('div',{class:'l'}, l)
   ]); };
+  const jumpToNeedsAttention = function(){ VIEW.truckTypeFilter='needs-attention'; VIEW.searchQuery=''; setMode('board'); };
   return el('div',{class:'stats'},[
     stat(blocks.length, 'Blocks this week'),
     stat(STATE.trucks.length, 'Total trucks'),
     stat(downTrucks, 'Trucks down', downTrucks?'warn':''),
     stat(groundedTrucks, 'Trucks grounded', groundedTrucks?'warn':''),
-    stat(unassignedTruck, 'No truck', unassignedTruck?'warn':'ok'),
-    stat(unassignedDriver, 'No driver', unassignedDriver?'warn':'ok'),
+    stat(unassignedTruck, 'No truck', unassignedTruck?'warn':'ok', unassignedTruck?jumpToNeedsAttention:null),
+    stat(unassignedDriver, 'No driver', unassignedDriver?'warn':'ok', unassignedDriver?jumpToNeedsAttention:null),
     stat(onDownTruck, 'On a down truck', onDownTruck?'warn':'ok'),
   ]);
 }
@@ -2095,7 +2155,7 @@ function renderTimeline(){
 function renderBoard(){
   const board = el('div',{class:'board'});
   const today = fmtISO(toDateOnly(new Date()));
-  const isSearching = VIEW.searchQuery.trim().length>0;
+  const isSearching = VIEW.searchQuery.trim().length>0 || VIEW.truckTypeFilter==='needs-attention';
   let anyMatchThisWeek = false;
   for(let i=0;i<7;i++){
     const date = addDays(VIEW.weekStart, i);
@@ -2149,7 +2209,10 @@ function renderBoard(){
     board.appendChild(col);
   }
   if(isSearching && !anyMatchThisWeek){
-    board.appendChild(el('div',{class:'day-empty', style:'padding:40px; width:100%; text-align:center;'}, 'No blocks match "'+VIEW.searchQuery.trim()+'" this week'));
+    const msg = VIEW.truckTypeFilter==='needs-attention'
+      ? '\u2705 Every block this week has a driver and a truck'
+      : 'No blocks match "'+VIEW.searchQuery.trim()+'" this week';
+    board.appendChild(el('div',{class:'day-empty', style:'padding:40px; width:100%; text-align:center;'}, msg));
   }
   return board;
 }
@@ -2160,12 +2223,19 @@ function renderCard(b){
   const assignedTruckForConflict = b.truckId ? STATE.trucks.find(function(t){ return t.id===b.truckId; }) : null;
   const isDownForConflict = assignedTruckForConflict && assignedTruckForConflict.status==='down';
   const hasConflict = (!b.rejected) && (truckConflict || driverConflict || isDownForConflict);
-  const card = el('div',{class:'card '+b.type+(hasConflict?' conflict':'')+(b.rejected?' rejected':'')});
+  const missingDriver = !b.rejected && !b.driverName;
+  const missingTruck = !b.rejected && !b.truckId;
+  const needsAttention = missingDriver || missingTruck;
+  const card = el('div',{class:'card '+b.type+(hasConflict?' conflict':'')+(b.rejected?' rejected':'')+(needsAttention?' needs-attention':'')});
 
   const typeBadge = el('span',{class:'typebadge'},
     (function(){ const bt = BLOCK_TYPES.find(function(x){ return x.value===b.type; }) || BLOCK_TYPES[0]; return bt.label+' \u00b7 '+bt.hours+'h'; })());
 
   if(b.rejected) card.appendChild(el('div',{class:'rejected-tag'}, '\u2716 REJECTED'));
+  if(needsAttention){
+    const label = (missingDriver && missingTruck) ? '\u26a0 Needs driver & truck' : (missingDriver ? '\u26a0 Needs driver' : '\u26a0 Needs truck');
+    card.appendChild(el('div',{class:'needs-attention-tag'}, label));
+  }
 
   const selectCb = el('input',{type:'checkbox', class:'block-select', checked: VIEW.selectedBlockIds.indexOf(b.id)!==-1 ? 'checked' : null,
     onchange:function(e){
@@ -2599,7 +2669,7 @@ function renderDriversPage(){
   const table = el('table',{class:'list'});
   table.appendChild(el('tr',{},[
     el('th',{},'Driver'), el('th',{},'Status'), el('th',{},'Contact'),
-    el('th',{},'Work Days'), el('th',{},'Trip Times'), el('th',{},'Runs'), el('th',{},'Time Off'),
+    el('th',{},'Work Days'), el('th',{},'Trip Times'), el('th',{},'Runs'),
     el('th',{},'Preferred Truck'), el('th',{},'Cycle Hrs'), el('th',{},'')
   ]));
   visibleDrivers.forEach(function(d){
@@ -2679,14 +2749,6 @@ function renderDriversPage(){
         saveState(); render();
       }
     });
-    const upcomingOff = d.timeOff.filter(function(iso){ return iso >= fmtISO(toDateOnly(new Date())); }).sort();
-    const timeOffWrap = upcomingOff.length>0
-      ? el('button',{class:'btn small', style:'padding:3px 8px; font-size:10.5px;', title:upcomingOff.join(', '),
-          onclick:function(){ VIEW.calendarDayModal=upcomingOff[0]; setMode('calendar'); }
-        }, '\ud83c\udf34 '+upcomingOff.length+' upcoming')
-      : el('button',{class:'btn small', style:'padding:3px 8px; font-size:10.5px; color:var(--text-faint);', title:'Manage in the Calendar tab',
-          onclick:function(){ setMode('calendar'); }
-        }, 'None set');
     const tr = el('tr',{},[
       el('td',{}, d.name),
       el('td',{}, statusBtn),
@@ -2694,7 +2756,6 @@ function renderDriversPage(){
       el('td',{}, daysWrap),
       el('td',{}, timesInput),
       el('td',{}, typesWrap),
-      el('td',{}, timeOffWrap),
       el('td',{}, sel),
       el('td',{}, cycleInput),
       el('td',{}, el('button',{class:'icon-btn danger', onclick:function(){
