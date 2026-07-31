@@ -178,6 +178,7 @@
   .stat-clickable{ cursor:pointer; transition:border-color .15s, transform .1s; }
   .stat-clickable:hover{ border-color:var(--amber-dim); }
   .stat-clickable:active{ transform:scale(0.97); }
+  .stat-active{ border-color:var(--amber); background:rgba(232,163,61,0.12); box-shadow:0 0 0 1px var(--amber); }
   .stat .n{ font-family:'Oswald',sans-serif; font-size:20px; font-weight:600; }
   .stat .l{ font-size:10.5px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.05em; margin-top:1px;}
   .stat.warn .n{ color:var(--red); }
@@ -1237,9 +1238,6 @@ function renderSearchBar(){
     el('option',{value:'solo5cap', selected: VIEW.truckTypeFilter==='solo5cap'?'selected':null}, 'Solo 5\u2011capable only')
   ]);
   wrap.appendChild(typeFilterSel);
-  if(VIEW.truckTypeFilter!=='all'){
-    wrap.appendChild(el('button',{class:'search-clear', title:'Clear filter \u2014 show every block again', onclick:function(){ VIEW.truckTypeFilter='all'; render(); }}, '\u2715 Show all'));
-  }
   return wrap;
 }
 
@@ -2056,18 +2054,26 @@ function renderStats(){
     const t = STATE.trucks.find(function(x){ return x.id===b.truckId; });
     return t && t.status==='down';
   }).length;
-  const stat = function(n,l,cls,onclick){ return el('div',{class:'stat'+(cls?(' '+cls):'')+(onclick?' stat-clickable':''), title: onclick?'Click to jump to these on the board':null, onclick:onclick},[
+  const stat = function(n,l,cls,onclick,isActive){ return el('div',{class:'stat'+(cls?(' '+cls):'')+(onclick?' stat-clickable':'')+(isActive?' stat-active':''), title: onclick?'Click to toggle this filter on the board':null, onclick:onclick},[
     el('div',{class:'n disp'}, String(n)), el('div',{class:'l'}, l)
   ]); };
-  const jumpToMissingTruck = function(){ VIEW.truckTypeFilter='missing-truck'; VIEW.searchQuery=''; setMode('board'); };
-  const jumpToMissingDriver = function(){ VIEW.truckTypeFilter='missing-driver'; VIEW.searchQuery=''; setMode('board'); };
+  const jumpToMissingTruck = function(){
+    VIEW.truckTypeFilter = (VIEW.truckTypeFilter==='missing-truck') ? 'all' : 'missing-truck';
+    VIEW.searchQuery='';
+    setMode('board');
+  };
+  const jumpToMissingDriver = function(){
+    VIEW.truckTypeFilter = (VIEW.truckTypeFilter==='missing-driver') ? 'all' : 'missing-driver';
+    VIEW.searchQuery='';
+    setMode('board');
+  };
   return el('div',{class:'stats'},[
     stat(blocks.length, 'Blocks this week'),
     stat(STATE.trucks.length, 'Total trucks'),
     stat(downTrucks, 'Trucks down', downTrucks?'warn':''),
     stat(groundedTrucks, 'Trucks grounded', groundedTrucks?'warn':''),
-    stat(unassignedTruck, 'No truck', unassignedTruck?'warn':'ok', unassignedTruck?jumpToMissingTruck:null),
-    stat(unassignedDriver, 'No driver', unassignedDriver?'warn':'ok', unassignedDriver?jumpToMissingDriver:null),
+    stat(unassignedTruck, 'No truck', unassignedTruck?'warn':'ok', unassignedTruck?jumpToMissingTruck:null, VIEW.truckTypeFilter==='missing-truck'),
+    stat(unassignedDriver, 'No driver', unassignedDriver?'warn':'ok', unassignedDriver?jumpToMissingDriver:null, VIEW.truckTypeFilter==='missing-driver'),
     stat(onDownTruck, 'On a down truck', onDownTruck?'warn':'ok'),
   ]);
 }
