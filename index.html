@@ -1202,6 +1202,8 @@ function blockMatchesSearch(b){
 function blockMatchesTruckFilter(b){
   if(VIEW.truckTypeFilter==='all') return true;
   if(VIEW.truckTypeFilter==='needs-attention') return !b.rejected && (!b.driverName || !b.truckId);
+  if(VIEW.truckTypeFilter==='missing-driver') return !b.rejected && !b.driverName;
+  if(VIEW.truckTypeFilter==='missing-truck') return !b.rejected && !b.truckId;
   if(!b.truckId) return false;
   const t = STATE.trucks.find(function(x){ return x.id===b.truckId; });
   if(!t) return false;
@@ -1209,6 +1211,9 @@ function blockMatchesTruckFilter(b){
   if(VIEW.truckTypeFilter==='sleeper') return t.vehicleType==='sleeper';
   if(VIEW.truckTypeFilter==='solo5cap') return t.vehicleType==='sleeper' && !!t.canDoSolo5;
   return true;
+}
+function isFocusFilter(){
+  return ['needs-attention','missing-driver','missing-truck'].indexOf(VIEW.truckTypeFilter)!==-1;
 }
 
 function renderSearchBar(){
@@ -1225,11 +1230,16 @@ function renderSearchBar(){
   const typeFilterSel = el('select',{class:'truck-type-filter', onchange:function(e){ VIEW.truckTypeFilter = e.target.value; render(); }},[
     el('option',{value:'all', selected: VIEW.truckTypeFilter==='all'?'selected':null}, '\ud83d\ude9a All truck types'),
     el('option',{value:'needs-attention', selected: VIEW.truckTypeFilter==='needs-attention'?'selected':null}, '\u26a0 Needs driver or truck'),
+    el('option',{value:'missing-driver', selected: VIEW.truckTypeFilter==='missing-driver'?'selected':null}, '\u26a0 Missing a driver'),
+    el('option',{value:'missing-truck', selected: VIEW.truckTypeFilter==='missing-truck'?'selected':null}, '\u26a0 Missing a truck'),
     el('option',{value:'daycab', selected: VIEW.truckTypeFilter==='daycab'?'selected':null}, 'Daycab only'),
     el('option',{value:'sleeper', selected: VIEW.truckTypeFilter==='sleeper'?'selected':null}, 'Sleeper only'),
     el('option',{value:'solo5cap', selected: VIEW.truckTypeFilter==='solo5cap'?'selected':null}, 'Solo 5\u2011capable only')
   ]);
   wrap.appendChild(typeFilterSel);
+  if(VIEW.truckTypeFilter!=='all'){
+    wrap.appendChild(el('button',{class:'search-clear', title:'Clear filter \u2014 show every block again', onclick:function(){ VIEW.truckTypeFilter='all'; render(); }}, '\u2715 Show all'));
+  }
   return wrap;
 }
 
@@ -1737,7 +1747,11 @@ function reassignBlocksOffTruck(truck){
 }
 
 function assignTrucksAutomatically(){
-  const candidates = currentWeekBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
+  // Note: no longer requires a driver to already be set. The "preferred truck" tier below
+  // still only applies when there IS a driver (since preferred truck is a property of the
+  // driver), but the fallback and closest-time tiers work purely off the block's own type and
+  // time -- so running this before or after "Assign Drivers" both work correctly.
+  const candidates = currentWeekBlocks().filter(function(b){ return !b.rejected && !b.truckId; })
     .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
   let assignedPreferred=0, assignedFallback=0, assignedClosest=0, noneAvailable=0, noPreferredSet=0;
 
@@ -1771,7 +1785,7 @@ function assignTrucksAutomatically(){
   }
 
   candidates.forEach(function(b){
-    const driver = STATE.drivers.find(function(d){ return d.name.trim().toLowerCase()===b.driverName.trim().toLowerCase(); });
+    const driver = b.driverName ? STATE.drivers.find(function(d){ return d.name.trim().toLowerCase()===b.driverName.trim().toLowerCase(); }) : null;
     let usedFallback = false;
     let chosen = null;
 
@@ -1802,7 +1816,7 @@ function assignTrucksAutomatically(){
   // only, never crossed, but picking whichever remaining truck's own schedule sits closest to
   // this block's time instead of leaving it empty.
   if(noneAvailable>0){
-    const stillShort = currentWeekBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
+    const stillShort = currentWeekBlocks().filter(function(b){ return !b.rejected && !b.truckId; })
       .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
     stillShort.forEach(function(b){
       const closestCandidates = STATE.trucks.filter(function(t){ return truckUsableIgnoringTime(t, b); })
@@ -2045,14 +2059,15 @@ function renderStats(){
   const stat = function(n,l,cls,onclick){ return el('div',{class:'stat'+(cls?(' '+cls):'')+(onclick?' stat-clickable':''), title: onclick?'Click to jump to these on the board':null, onclick:onclick},[
     el('div',{class:'n disp'}, String(n)), el('div',{class:'l'}, l)
   ]); };
-  const jumpToNeedsAttention = function(){ VIEW.truckTypeFilter='needs-attention'; VIEW.searchQuery=''; setMode('board'); };
+  const jumpToMissingTruck = function(){ VIEW.truckTypeFilter='missing-truck'; VIEW.searchQuery=''; setMode('board'); };
+  const jumpToMissingDriver = function(){ VIEW.truckTypeFilter='missing-driver'; VIEW.searchQuery=''; setMode('board'); };
   return el('div',{class:'stats'},[
     stat(blocks.length, 'Blocks this week'),
     stat(STATE.trucks.length, 'Total trucks'),
     stat(downTrucks, 'Trucks down', downTrucks?'warn':''),
     stat(groundedTrucks, 'Trucks grounded', groundedTrucks?'warn':''),
-    stat(unassignedTruck, 'No truck', unassignedTruck?'warn':'ok', unassignedTruck?jumpToNeedsAttention:null),
-    stat(unassignedDriver, 'No driver', unassignedDriver?'warn':'ok', unassignedDriver?jumpToNeedsAttention:null),
+    stat(unassignedTruck, 'No truck', unassignedTruck?'warn':'ok', unassignedTruck?jumpToMissingTruck:null),
+    stat(unassignedDriver, 'No driver', unassignedDriver?'warn':'ok', unassignedDriver?jumpToMissingDriver:null),
     stat(onDownTruck, 'On a down truck', onDownTruck?'warn':'ok'),
   ]);
 }
@@ -2155,7 +2170,7 @@ function renderTimeline(){
 function renderBoard(){
   const board = el('div',{class:'board'});
   const today = fmtISO(toDateOnly(new Date()));
-  const isSearching = VIEW.searchQuery.trim().length>0 || VIEW.truckTypeFilter==='needs-attention';
+  const isSearching = VIEW.searchQuery.trim().length>0 || isFocusFilter();
   let anyMatchThisWeek = false;
   for(let i=0;i<7;i++){
     const date = addDays(VIEW.weekStart, i);
@@ -2209,9 +2224,11 @@ function renderBoard(){
     board.appendChild(col);
   }
   if(isSearching && !anyMatchThisWeek){
-    const msg = VIEW.truckTypeFilter==='needs-attention'
-      ? '\u2705 Every block this week has a driver and a truck'
-      : 'No blocks match "'+VIEW.searchQuery.trim()+'" this week';
+    let msg;
+    if(VIEW.truckTypeFilter==='needs-attention') msg = '\u2705 Every block this week has a driver and a truck';
+    else if(VIEW.truckTypeFilter==='missing-driver') msg = '\u2705 Every block this week has a driver';
+    else if(VIEW.truckTypeFilter==='missing-truck') msg = '\u2705 Every block this week has a truck';
+    else msg = 'No blocks match "'+VIEW.searchQuery.trim()+'" this week';
     board.appendChild(el('div',{class:'day-empty', style:'padding:40px; width:100%; text-align:center;'}, msg));
   }
   return board;
