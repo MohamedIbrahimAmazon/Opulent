@@ -2256,7 +2256,7 @@ function renderTimeline(){
       .filter(function(n, i, arr){ return arr.indexOf(n)===i; })
       .filter(function(n){ return driverWeeklyHours(n) > 0 || driverCycleHours(n) > 0; })
       .filter(function(n){ return !tq || n.toLowerCase().indexOf(tq)!==-1; })
-      .sort(function(a,b2){ return driverCycleHours(b2)-driverCycleHours(a); });
+      .sort(function(a,b2){ return a.localeCompare(b2); });
 
     if(names.length===0){
       inner.appendChild(el('div',{class:'timeline-empty'}, tq ? 'No drivers match "'+VIEW.timelineSearchQuery.trim()+'"' : 'No drivers scheduled this week'));
