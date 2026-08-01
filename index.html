@@ -1972,10 +1972,12 @@ function driverRestGaps(driverName){
 // blocks zeroes the running total (an HOS restart), same as driverRestGaps detects.
 // Only counts blocks up to and including the end of the currently viewed week, so
 // paging the week forward shows the projected cycle total at that point.
-// IMPORTANT: also checks the gap between the LAST block's end and the reference point
-// itself ('we' -- the end of the viewed week, i.e. effectively "now" for the current
-// week). This means a 34h+ break resets the total immediately once that much time has
-// passed, instead of waiting for a brand new block to be scheduled before it shows up.
+// IMPORTANT: also checks whether 34h+ has genuinely elapsed since the last block ended,
+// using the REAL current time -- capped at the viewed week's end so future/projection
+// views don't invent a reset before it would actually happen. Using the week-view
+// boundary itself here (instead of real time) was a bug: a driver's last block often
+// ends days before the calendar week is over, which would falsely look like a 34h+ gap
+// even though real time hasn't actually passed yet.
 function driverCycleHours(driverName){
   const driver = STATE.drivers.find(function(d){ return d.name.trim().toLowerCase()===driverName.trim().toLowerCase(); });
   const baseline = (driver && typeof driver.cycleHoursUsed==='number') ? driver.cycleHoursUsed : 0;
@@ -1991,10 +1993,11 @@ function driverCycleHours(driverName){
     running += HOS_CONSUMED_HOURS[b.type]||0;
     prevEnd = e;
   });
-  // Live reset: if it's already been 34h+ since their last block ended (as of the
-  // reference point 'we'), they're back to a fresh cycle right now -- reflect that
-  // in the number itself rather than only in a separate "fresh" badge.
-  if(prevEnd && ((we-prevEnd)/3600000) >= HOS_RESET_HOURS) running = 0;
+  // Live reset: only meaningful as of the REAL current moment, capped so we never look
+  // further ahead than the viewed week's end (no inventing a future reset early).
+  const now = new Date();
+  const refPoint = we < now ? we : now;
+  if(prevEnd && ((refPoint-prevEnd)/3600000) >= HOS_RESET_HOURS) running = 0;
   return running;
 }
 
