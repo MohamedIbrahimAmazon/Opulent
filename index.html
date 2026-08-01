@@ -480,9 +480,12 @@ const BLOCK_TYPES = [
 function truckCanRunType(truck, blockType){
   if(!truck) return false;
   const vt = truck.vehicleType || 'daycab';
+  // A sleeper marked Solo 5-capable is dedicated to Solo 5 only -- it no longer doubles as a
+  // Solo 2 truck. A sleeper WITHOUT that flag stays Solo 2 only, as before.
+  if(vt==='sleeper' && truck.canDoSolo5) return blockType==='solo5';
   if(blockType==='solo1') return vt==='daycab';
   if(blockType==='solo2') return vt==='sleeper';
-  if(blockType==='solo5') return vt==='sleeper' && !!truck.canDoSolo5;
+  if(blockType==='solo5') return false;
   return false;
 }
 function nextBlockType(t){
@@ -1872,13 +1875,37 @@ function assignTrucksAutomatically(){
     });
   }
 
-  if(assignedPreferred+assignedFallback+assignedClosest>0) saveState();
-  const total = assignedPreferred+assignedFallback+assignedClosest;
-  logAction('Auto-assigned trucks: '+total+' filled ('+assignedPreferred+' preferred, '+assignedFallback+' fallback, '+assignedClosest+' closest-time), '+noneAvailable+' none available');
+  // Third pass: blocks that STILL have no driver at all. These were deliberately skipped
+  // above so driver-having blocks always get first pick of the trucks -- but once those are
+  // settled, go ahead and put a truck on the leftover driverless blocks too (same rules, same
+  // closest-time fit) rather than leaving the truck slot empty just because no driver's been
+  // picked yet.
+  let assignedNoDriver = 0, noneAvailableNoDriver = 0;
+  const driverlessCandidates = currentWeekBlocks().filter(function(b){ return !b.rejected && !b.driverName && !b.truckId; })
+    .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
+  driverlessCandidates.forEach(function(b){
+    const candidates2 = STATE.trucks.filter(function(t){ return truckUsableIgnoringTime(t, b); })
+      .sort(function(a,c){
+        const da = closestTimeDistance(a, b), dc = closestTimeDistance(c, b);
+        if(da !== dc) return da - dc;
+        return a.number.localeCompare(c.number);
+      });
+    if(candidates2.length>0){
+      b.truckId = candidates2[0].id;
+      assignedNoDriver++;
+    } else {
+      noneAvailableNoDriver++;
+    }
+  });
+
+  if(assignedPreferred+assignedFallback+assignedClosest+assignedNoDriver>0) saveState();
+  const total = assignedPreferred+assignedFallback+assignedClosest+assignedNoDriver;
+  logAction('Auto-assigned trucks: '+total+' filled ('+assignedPreferred+' preferred, '+assignedFallback+' fallback, '+assignedClosest+' closest-time, '+assignedNoDriver+' driverless), '+noneAvailable+' none available (with driver), '+noneAvailableNoDriver+' none available (driverless)');
   showToast('Assigned '+total+' truck(s)'
     +(assignedFallback ? (' \u2014 '+assignedFallback+' used a fallback truck (preferred was unavailable)') : '')
     +(assignedClosest ? (' \u2014 '+assignedClosest+' used the closest-available truck (exact time wasn\u2019t free)') : '')
-    +(noneAvailable ? (' \u2014 '+noneAvailable+' had no compatible truck free at all') : ''));
+    +(assignedNoDriver ? (' \u2014 '+assignedNoDriver+' filled on driverless blocks too') : '')
+    +((noneAvailable+noneAvailableNoDriver) ? (' \u2014 '+(noneAvailable+noneAvailableNoDriver)+' had no compatible truck free at all') : ''));
   render();
 }
 
@@ -1941,6 +1968,14 @@ function driverCycleHours(driverName){
     running += HOS_CONSUMED_HOURS[b.type]||0;
     prevEnd = e;
   });
+  // A driver with no new block yet still keeps accumulating rest time in the real world.
+  // Without this, someone who's simply had a long enough break -- but hasn't been assigned a
+  // new block yet -- would keep showing their old (already-expired) cycle total here instead
+  // of reflecting that they're actually back to a fresh 70h.
+  if(prevEnd){
+    const gapToNowHours = (Date.now() - prevEnd.getTime())/3600000;
+    if(gapToNowHours >= HOS_RESET_HOURS) running = 0;
+  }
   return running;
 }
 
@@ -2478,6 +2513,9 @@ function renderCard(b){
   const activeTrucks = STATE.trucks.filter(function(t){
     if(t.id===b.truckId) return true; // always show the currently assigned truck, even if down/grounded/busy, so it stays visible/reassignable
     if(t.status!=='active') return false;
+    // Solo 5-dedicated trucks (Sleeper + "Solo 5" checked) never show up as an option for
+    // anything but a Solo 5 block, even for manual selection.
+    if(t.vehicleType==='sleeper' && t.canDoSolo5 && b.type!=='solo5') return false;
     return truckIsFreeFor(t.id, b);
   }).sort(function(a,c){ return a.number.localeCompare(c.number, undefined, {numeric:true}); });
   activeTrucks.forEach(function(t){
