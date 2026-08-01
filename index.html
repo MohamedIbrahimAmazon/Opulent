@@ -2242,7 +2242,7 @@ function renderTimeline(){
       const row = el('div',{class:'timeline-row'});
       row.appendChild(el('div',{class:'timeline-label'},[
         el('div',{}, name),
-        el('div',{class:'hrs'+overCls}, Math.round(used*10)/10+'h used / '+HOS_WEEKLY_LIMIT_HOURS+'h cycle'),
+        el('div',{class:'hrs'+overCls}, (used>HOS_WEEKLY_LIMIT_HOURS ? (HOS_WEEKLY_LIMIT_HOURS+'h+ used (over limit)') : (Math.round(used*10)/10+'h used / '+HOS_WEEKLY_LIMIT_HOURS+'h cycle'))),
         isFresh ? el('div',{class:'fresh-badge', title:'Had a 34h+ break since their last trip \u2014 back to a full 70h right now, even though the total above won\u2019t reflect it until they get a new block'}, '\u2713 Available (fresh 70h)') : null
       ]));
       const track = el('div',{class:'timeline-track'});
