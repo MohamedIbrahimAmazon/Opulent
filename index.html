@@ -2423,39 +2423,6 @@ function renderCard(b){
 
   const driverSel = el('select',{class:'driver-select'+(!b.driverName?' empty':'')+(driverConflict?' conflictsel':''), onchange:function(e){
     const val = e.target.value;
-    if(val==='__new__'){
-      const name = window.prompt('New driver name:');
-      if(name && name.trim()){
-        const trimmed = name.trim();
-        if(!STATE.drivers.find(function(d){ return d.name.toLowerCase()===trimmed.toLowerCase(); })){
-          STATE.drivers.push({id: uid('drv'), name: trimmed, preferredTruckId:null, cycleHoursUsed:0, workDays:[], tripTimes:[], allowedTypes:['solo1','solo2','solo5'], timeOff:[], active:true, email:'', phone:'', domicile:''});
-        }
-        const test = Object.assign({}, b, {driverName: trimmed});
-        const c = checkDriverConflict(trimmed, test);
-        if(c){
-          showToast('\ud83d\udeab '+trimmed+' is already on block '+(c.blockId||'')+' ('+c.anchorTime+') \u2014 conflicting times', true);
-          render();
-          return;
-        }
-        const newDriverObj = STATE.drivers.find(function(d){ return d.name.toLowerCase()===trimmed.toLowerCase(); });
-        if(newDriverObj && driverOnTimeOff(newDriverObj, b.date)){
-          showToast('\ud83d\udeab '+trimmed+' is marked off (vacation/leave) on '+b.date, true);
-          render();
-          return;
-        }
-        const hos = driverHOSViolation(trimmed, test);
-        if(hos){
-          showToast('\ud83d\udeab '+trimmed+' \u2014 '+hos, true);
-          render();
-          return;
-        }
-        const prevDriver = b.driverName;
-        b.driverName = trimmed;
-        logAction('Set driver on block '+(b.blockId||b.id)+' from "'+(prevDriver||'none')+'" to "'+trimmed+'"');
-      }
-      saveState(); render();
-      return;
-    }
     if(val){
       const test = Object.assign({}, b, {driverName: val});
       const c = checkDriverConflict(val, test);
@@ -2498,7 +2465,6 @@ function renderCard(b){
   if(b.driverName && !STATE.drivers.find(function(d){ return d.name===b.driverName; })){
     driverSel.appendChild(el('option',{value:b.driverName, selected:'selected'}, b.driverName));
   }
-  driverSel.appendChild(el('option',{value:'__new__'}, '+ Add new driver\u2026'));
   card.appendChild(driverSel);
   card.appendChild(el('div',{class:'blockid mono'}, b.blockId || '\u2014'));
 
