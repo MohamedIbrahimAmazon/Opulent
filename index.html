@@ -281,12 +281,25 @@
   .card .block-select{ margin-top:3px; cursor:pointer; }
   .card .time{ font-family:'Oswald',sans-serif; font-size:16px; font-weight:600; color:var(--amber); letter-spacing:0.02em; }
   .card .endtime{ font-size:10px; color:var(--text-faint); margin-top:1px; font-family:'JetBrains Mono',monospace; }
-  .actual-end-row{ display:flex; flex-direction:column; align-items:stretch; gap:3px; margin-top:8px; }
-  .actual-end-toprow{ display:flex; align-items:center; justify-content:space-between; gap:6px; }
-  .actual-end-label{ font-size:10px; color:var(--text-faint); white-space:nowrap; text-transform:uppercase; letter-spacing:0.03em; }
-  .actual-end-input{ font-size:12.5px; padding:6px 7px; background:var(--bg-panel); border:1px solid var(--line); color:var(--text-dim); border-radius:6px; width:100%; font-family:'JetBrains Mono',monospace; }
-  .actual-end-input:not(:placeholder-shown), .actual-end-input[value]:not([value=""]){ border-color:var(--amber-dim); color:var(--text); }
-  .actual-end-clear{ background:none; border:none; color:var(--text-faint); cursor:pointer; font-size:10px; padding:2px 2px; line-height:1; }
+  .actual-end-toggle{
+    background:none; border:none; padding:0; margin:6px 0 2px; display:block; cursor:pointer;
+    font-size:10px; color:var(--text-faint); text-decoration:underline; text-underline-offset:2px;
+  }
+  .actual-end-toggle:hover{ color:var(--amber); }
+  .actual-end-row{ display:flex; align-items:center; gap:4px; margin:6px 0 2px; flex-wrap:wrap; }
+  .actual-end-tag{ font-size:9.5px; color:var(--text-faint); white-space:nowrap; }
+  .actual-end-date, .actual-end-time{
+    color-scheme: dark; font-size:10.5px; padding:2px 4px; line-height:1.4;
+    background:var(--bg-card); border:1px solid var(--amber-dim); color:var(--text);
+    border-radius:4px; font-family:'JetBrains Mono',monospace;
+  }
+  .actual-end-date{ max-width:118px; }
+  .actual-end-time{ width:48px; text-align:center; }
+  body.light .actual-end-date, body.light .actual-end-time{ color-scheme: light; }
+  .actual-end-clear{
+    background:none; border:none; padding:0 2px; cursor:pointer; font-size:11px; line-height:1;
+    color:var(--text-faint);
+  }
   .actual-end-clear:hover{ color:var(--red); }
   .card .typebadge{
     font-size:9.5px; padding:2px 6px; border-radius:5px; font-weight:600; letter-spacing:0.03em;
@@ -2292,6 +2305,49 @@ function renderCard(b){
       updateBlockBulkBarOnly();
     }});
 
+  function splitActualEnd(v){
+    if(!v) return {date:'', time:''};
+    const parts = v.split('T');
+    return {date: parts[0]||'', time: (parts[1]||'').slice(0,5)};
+  }
+  function commitActualEnd(dateVal, timeVal, dateEl, timeEl){
+    if(dateVal && /^([01]\d|2[0-3]):[0-5]\d$/.test(timeVal)){
+      b.actualEnd = dateVal+'T'+timeVal;
+      logAction('Set actual end on block '+(b.blockId||b.id)+' to '+b.actualEnd);
+      saveState(); render();
+    }
+  }
+  const aeParts = splitActualEnd(b.actualEnd);
+  const actualEndSlot = b.actualEnd
+    ? el('div',{class:'actual-end-row'},[
+        el('span',{class:'actual-end-tag'}, '\ud83d\udd50 Actual end'),
+        (function(){
+          const dateEl = el('input',{type:'date', class:'actual-end-date', value: aeParts.date});
+          const timeEl = el('input',{type:'text', class:'actual-end-time', value: aeParts.time, placeholder:'HH:MM', maxlength:'5', inputmode:'numeric'});
+          dateEl.addEventListener('change', function(){ commitActualEnd(dateEl.value, timeEl.value.trim()); });
+          timeEl.addEventListener('blur', function(){ commitActualEnd(dateEl.value, timeEl.value.trim()); });
+          const frag = document.createDocumentFragment();
+          frag.appendChild(dateEl); frag.appendChild(timeEl);
+          return frag;
+        })(),
+        el('button',{class:'actual-end-clear', title:'Clear \u2014 use the scheduled end time again', onclick:function(){
+          b.actualEnd = null;
+          logAction('Cleared actual end on block '+(b.blockId||b.id)+', back to scheduled');
+          saveState(); render();
+        }}, '\u2715')
+      ])
+    : el('button',{class:'actual-end-toggle', type:'button', title:'Log the real end time (24h) if this trip didn\u2019t end exactly on schedule',
+        onclick:function(e){
+          const dateEl = el('input',{type:'date', class:'actual-end-date', value: b.date});
+          const timeEl = el('input',{type:'text', class:'actual-end-time', placeholder:'HH:MM', maxlength:'5', inputmode:'numeric'});
+          dateEl.addEventListener('change', function(){ commitActualEnd(dateEl.value, timeEl.value.trim()); });
+          timeEl.addEventListener('blur', function(){ commitActualEnd(dateEl.value, timeEl.value.trim()); });
+          const wrap = el('div',{class:'actual-end-row'},[ el('span',{class:'actual-end-tag'}, '\ud83d\udd50'), dateEl, timeEl ]);
+          e.target.replaceWith(wrap);
+          timeEl.focus();
+        }
+      }, '\ud83d\udd50 Log actual end');
+
   card.appendChild(el('div',{class:'row1'},[
     el('div',{style:'display:flex; align-items:flex-start; gap:6px;'},[
       selectCb,
@@ -2433,24 +2489,7 @@ function renderCard(b){
     card.appendChild(el('div',{class:'conflictmsg', style:'color:var(--amber)'}, '\u26a0 Truck '+assignedTruck.number+' is grounded'+(assignedTruck.note?(' \u2014 '+assignedTruck.note):'')+' (still assignable)'));
   }
 
-  card.appendChild(el('div',{class:'actual-end-row'},[
-    el('div',{class:'actual-end-toprow'},[
-      el('label',{class:'actual-end-label'}, 'Actual end'),
-      b.actualEnd ? el('button',{class:'actual-end-clear', title:'Clear actual end', onclick:function(){
-        b.actualEnd = null;
-        logAction('Cleared actual end on block '+(b.blockId||b.id));
-        saveState(); render();
-      }}, '\u2715 Clear') : null
-    ]),
-    el('input',{type:'datetime-local', class:'actual-end-input', lang:'en-GB', value: b.actualEnd||'', title:'If the trip actually ended at a different time than scheduled, set it here \u2014 rest time, cycle hours and Timeline all use this instead of the scheduled end once set.',
-      onchange:function(e){
-        const prev = b.actualEnd;
-        b.actualEnd = e.target.value || null;
-        logAction('Set actual end on block '+(b.blockId||b.id)+' to '+(b.actualEnd || 'scheduled (cleared)'));
-        saveState(); render();
-      }
-    })
-  ]));
+  card.appendChild(actualEndSlot);
 
   const noteInput = el('input',{class:'block-note', value: b.note||'', placeholder:'+ Add note\u2026',
     oninput: function(e){ b.note = e.target.value; },
