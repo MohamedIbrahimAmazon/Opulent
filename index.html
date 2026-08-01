@@ -449,7 +449,7 @@ let isBoardLoading = true; // true until the shared board_state has actually bee
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null, timelineSearchQuery:'' };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 let currentUser = null; // { id, email } once signed in, else null
@@ -2172,6 +2172,16 @@ function renderTimeline(){
   ]);
   wrap.appendChild(toggle);
 
+  const timelineSearchWrap = el('div',{class:'search-bar'});
+  timelineSearchWrap.appendChild(el('input',{id:'timelineSearchInput', value:VIEW.timelineSearchQuery,
+    placeholder: VIEW.timelineBy==='driver' ? '\ud83d\udd0d Search driver\u2026' : '\ud83d\udd0d Search truck number\u2026',
+    oninput:function(e){ VIEW.timelineSearchQuery = e.target.value; render(); }
+  }));
+  if(VIEW.timelineSearchQuery.trim()){
+    timelineSearchWrap.appendChild(el('button',{class:'search-clear', onclick:function(){ VIEW.timelineSearchQuery=''; render(); }}, '\u2715'));
+  }
+  wrap.appendChild(timelineSearchWrap);
+
   if(VIEW.timelineBy==='driver'){
     wrap.appendChild(el('div',{class:'timeline-note'}, '\u24d8 Cycle hours = each driver\u2019s starting cycle (set in Drivers) + scheduled block durations since, resetting to 0 after any 34h+ gap. This is a planning estimate from nominal Solo 1/2/5 windows, not verified drive time or certified HOS compliance. Green bands mark detected 34h+ reset gaps.'));
   }
@@ -2203,13 +2213,15 @@ function renderTimeline(){
   }
 
   if(VIEW.timelineBy==='driver'){
+    const tq = VIEW.timelineSearchQuery.trim().toLowerCase();
     const names = STATE.drivers.map(function(d){ return d.name; })
       .filter(function(n, i, arr){ return arr.indexOf(n)===i; })
       .filter(function(n){ return driverWeeklyHours(n) > 0 || driverCycleHours(n) > 0; })
+      .filter(function(n){ return !tq || n.toLowerCase().indexOf(tq)!==-1; })
       .sort(function(a,b2){ return driverCycleHours(b2)-driverCycleHours(a); });
 
     if(names.length===0){
-      inner.appendChild(el('div',{class:'timeline-empty'}, 'No drivers scheduled this week'));
+      inner.appendChild(el('div',{class:'timeline-empty'}, tq ? 'No drivers match "'+VIEW.timelineSearchQuery.trim()+'"' : 'No drivers scheduled this week'));
     }
 
     names.forEach(function(name){
@@ -2234,9 +2246,12 @@ function renderTimeline(){
       inner.appendChild(row);
     });
   } else {
-    const trucks = STATE.trucks.slice().sort(function(a,b2){ return a.number.localeCompare(b2.number); });
+    const tq = VIEW.timelineSearchQuery.trim().toLowerCase();
+    const trucks = STATE.trucks.slice()
+      .filter(function(t){ return !tq || t.number.toLowerCase().indexOf(tq)!==-1; })
+      .sort(function(a,b2){ return a.number.localeCompare(b2.number, undefined, {numeric:true}); });
     if(trucks.length===0){
-      inner.appendChild(el('div',{class:'timeline-empty'}, 'No trucks added yet'));
+      inner.appendChild(el('div',{class:'timeline-empty'}, tq ? 'No trucks match "'+VIEW.timelineSearchQuery.trim()+'"' : 'No trucks added yet'));
     }
     trucks.forEach(function(t){
       const row = el('div',{class:'timeline-row'});
@@ -3312,23 +3327,9 @@ function closeAnyOpenModal(){
   return closed;
 }
 
-function focusSearchBox(){
-  if(VIEW.mode!=='board'){ setMode('board'); }
-  setTimeout(function(){
-    const el2 = document.getElementById('searchInput');
-    if(el2){ el2.focus(); el2.select(); }
-  }, 30);
-}
-
 document.addEventListener('keydown', function(e){
   if(e.key==='Escape'){
     closeAnyOpenModal();
-    return;
-  }
-  const isFindShortcut = (e.ctrlKey || e.metaKey) && (e.key==='f' || e.key==='F');
-  if(isFindShortcut){
-    e.preventDefault();
-    focusSearchBox();
   }
 });
 
