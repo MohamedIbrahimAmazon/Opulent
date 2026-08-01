@@ -1107,6 +1107,14 @@ function setMode(m){
   render();
 }
 
+const WEEK_PREF_KEY = 'board-week-pref';
+// Changes the viewed week and remembers it (per browser) so a refresh reopens the same
+// week instead of always snapping back to "this week".
+function setWeekStart(newWeekStart){
+  VIEW.weekStart = newWeekStart;
+  try{ localStorage.setItem(WEEK_PREF_KEY, fmtISO(newWeekStart)); }catch(e){}
+}
+
 function renderSetPasswordScreen(){
   const passInput = el('input',{type:'password', placeholder:'Choose a password (min 6 characters)', autocomplete:'new-password', id:'newPassword'});
   const confirmInput = el('input',{type:'password', placeholder:'Confirm password', autocomplete:'new-password', id:'newPasswordConfirm'});
@@ -1557,11 +1565,11 @@ function renderHistoryModal(){
 function renderHeader(){
   const nav = el('div',{class:'week-nav-group'},[
     el('div',{class:'week-nav'},[
-      el('button',{onclick:function(){VIEW.weekStart=addDays(VIEW.weekStart,-7); render();}}, '\u2039'),
+      el('button',{onclick:function(){setWeekStart(addDays(VIEW.weekStart,-7)); render();}}, '\u2039'),
       el('div',{class:'label mono'}, fmtWeekLabel(VIEW.weekStart)),
-      el('button',{onclick:function(){VIEW.weekStart=addDays(VIEW.weekStart,7); render();}}, '\u203a')
+      el('button',{onclick:function(){setWeekStart(addDays(VIEW.weekStart,7)); render();}}, '\u203a')
     ]),
-    el('button',{class:'today-btn', onclick:function(){VIEW.weekStart=getWeekStart(new Date()); render();}}, 'This Week')
+    el('button',{class:'today-btn', onclick:function(){setWeekStart(getWeekStart(new Date())); render();}}, 'This Week')
   ]);
   const upload = el('input',{type:'file', id:'csvInput', accept:'.csv', onchange:handleCsvFile});
   const importInput = el('input',{type:'file', id:'importInput', accept:'.json', onchange:handleImportFile});
@@ -2213,7 +2221,7 @@ function renderTimeline(){
   wrap.appendChild(timelineSearchWrap);
 
   if(VIEW.timelineBy==='driver'){
-    wrap.appendChild(el('div',{class:'timeline-note'}, '\u24d8 Cycle hours = each driver\u2019s starting cycle (set in Drivers) + scheduled block durations since, resetting to 0 after any 34h+ gap. This is a planning estimate from nominal Solo 1/2/5 windows, not verified drive time or certified HOS compliance. Green bands mark detected 34h+ reset gaps.'));
+    wrap.appendChild(el('div',{class:'timeline-note'}, '\u24d8 Green bands mark detected 34h+ rest gaps between a driver\u2019s blocks (an HOS restart).'));
   }
 
   const inner = el('div',{class:'timeline-inner'});
@@ -2255,16 +2263,9 @@ function renderTimeline(){
     }
 
     names.forEach(function(name){
-      const remaining = driverRemainingCycleHours(name);
-      // Countdown display: 70h -> 0h. "over" once nothing is left, "warn" once
-      // remaining drops to 15% (10.5h) or less of the full cycle.
-      const overCls = remaining<=0 ? ' over' : (remaining<=HOS_WEEKLY_LIMIT_HOURS*0.15 ? ' warn' : '');
-      const isFresh = driverIsFreshlyAvailable(name);
       const row = el('div',{class:'timeline-row'});
       row.appendChild(el('div',{class:'timeline-label'},[
-        el('div',{}, name),
-        el('div',{class:'hrs'+overCls}, (remaining<=0 ? ('0h left (limit reached)') : (Math.round(remaining*10)/10+'h left / '+HOS_WEEKLY_LIMIT_HOURS+'h cycle'))),
-        isFresh ? el('div',{class:'fresh-badge', title:'Had a 34h+ break since their last trip \u2014 back to a full 70h right now'}, '\u2713 Fresh 70h available') : null
+        el('div',{}, name)
       ]));
       const track = el('div',{class:'timeline-track'});
       driverRestGaps(name).forEach(function(g){
@@ -3336,6 +3337,15 @@ document.addEventListener('keydown', function(e){
 (async function init(){
   console.log('%cTruck Assignment Board \u2014 build 2026-07-30-conflict-fix', 'color:#e8a33d; font-weight:bold; font-size:13px;');
   VIEW.weekStart = getWeekStart(new Date());
+  try{
+    const savedWeek = localStorage.getItem(WEEK_PREF_KEY);
+    if(savedWeek){
+      const p = savedWeek.split('-').map(Number);
+      if(p.length===3 && !isNaN(p[0]) && !isNaN(p[1]) && !isNaN(p[2])){
+        VIEW.weekStart = new Date(p[0], p[1]-1, p[2]);
+      }
+    }
+  }catch(e){}
   VIEW.calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
   try{
     const savedMode = localStorage.getItem(MODE_PREF_KEY);
