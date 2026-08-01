@@ -1966,12 +1966,16 @@ function driverRestGaps(driverName){
   return gaps;
 }
 
-// Cumulative cycle hours for a driver, starting from their manually-entered baseline
+// Cumulative cycle hours USED for a driver, starting from their manually-entered baseline
 // (hours already on the clock before this tool started tracking them), then walking
 // forward through every scheduled block in order. A 34h+ gap between two consecutive
 // blocks zeroes the running total (an HOS restart), same as driverRestGaps detects.
 // Only counts blocks up to and including the end of the currently viewed week, so
 // paging the week forward shows the projected cycle total at that point.
+// IMPORTANT: also checks the gap between the LAST block's end and the reference point
+// itself ('we' -- the end of the viewed week, i.e. effectively "now" for the current
+// week). This means a 34h+ break resets the total immediately once that much time has
+// passed, instead of waiting for a brand new block to be scheduled before it shows up.
 function driverCycleHours(driverName){
   const driver = STATE.drivers.find(function(d){ return d.name.trim().toLowerCase()===driverName.trim().toLowerCase(); });
   const baseline = (driver && typeof driver.cycleHoursUsed==='number') ? driver.cycleHoursUsed : 0;
@@ -1987,7 +1991,19 @@ function driverCycleHours(driverName){
     running += HOS_CONSUMED_HOURS[b.type]||0;
     prevEnd = e;
   });
+  // Live reset: if it's already been 34h+ since their last block ended (as of the
+  // reference point 'we'), they're back to a fresh cycle right now -- reflect that
+  // in the number itself rather than only in a separate "fresh" badge.
+  if(prevEnd && ((we-prevEnd)/3600000) >= HOS_RESET_HOURS) running = 0;
   return running;
+}
+
+// Hours remaining before the driver hits the 70h/8-day cap -- a simple countdown
+// (70 -> 0) derived from driverCycleHours, clamped so a baseline entered above 70
+// (which the UI shouldn't normally allow, but just in case) never shows negative.
+function driverRemainingCycleHours(driverName){
+  const used = driverCycleHours(driverName);
+  return Math.max(0, Math.min(HOS_WEEKLY_LIMIT_HOURS, HOS_WEEKLY_LIMIT_HOURS - used));
 }
 
 const HOS_MIN_REST_HOURS = 10;
@@ -2236,14 +2252,16 @@ function renderTimeline(){
     }
 
     names.forEach(function(name){
-      const used = driverCycleHours(name);
-      const overCls = used>HOS_WEEKLY_LIMIT_HOURS ? ' over' : (used>=HOS_WEEKLY_LIMIT_HOURS*0.85 ? ' warn' : '');
+      const remaining = driverRemainingCycleHours(name);
+      // Countdown display: 70h -> 0h. "over" once nothing is left, "warn" once
+      // remaining drops to 15% (10.5h) or less of the full cycle.
+      const overCls = remaining<=0 ? ' over' : (remaining<=HOS_WEEKLY_LIMIT_HOURS*0.15 ? ' warn' : '');
       const isFresh = driverIsFreshlyAvailable(name);
       const row = el('div',{class:'timeline-row'});
       row.appendChild(el('div',{class:'timeline-label'},[
         el('div',{}, name),
-        el('div',{class:'hrs'+overCls}, (used>HOS_WEEKLY_LIMIT_HOURS ? (HOS_WEEKLY_LIMIT_HOURS+'h+ used (over limit)') : (Math.round(used*10)/10+'h used / '+HOS_WEEKLY_LIMIT_HOURS+'h cycle'))),
-        isFresh ? el('div',{class:'fresh-badge', title:'Had a 34h+ break since their last trip \u2014 back to a full 70h right now, even though the total above won\u2019t reflect it until they get a new block'}, '\u2713 Available (fresh 70h)') : null
+        el('div',{class:'hrs'+overCls}, (remaining<=0 ? ('0h left (limit reached)') : (Math.round(remaining*10)/10+'h left / '+HOS_WEEKLY_LIMIT_HOURS+'h cycle'))),
+        isFresh ? el('div',{class:'fresh-badge', title:'Had a 34h+ break since their last trip \u2014 back to a full 70h right now'}, '\u2713 Fresh 70h available') : null
       ]));
       const track = el('div',{class:'timeline-track'});
       driverRestGaps(name).forEach(function(g){
@@ -2779,7 +2797,7 @@ function renderDriversPage(){
 
   page.appendChild(el('div',{class:'csv-note'}, [
     el('div',{}, [el('b',{},'Work days / Trip times / Runs'), ' \u2014 the driver\u2019s standing weekly schedule. Click "Assign Drivers" on the board to auto-fill blocks with no driver yet, matching by day, anchor time, and Solo type \u2014 while respecting the 10h minimum rest between trips and the 70h/8-day cycle cap.']),
-    el('div',{}, [el('b',{},'Cycle hours used'), ' \u2014 the driver\u2019s starting point on the 70h clock, tracked forward automatically (Timeline view) and reset after any 34h+ break.']),
+    el('div',{}, [el('b',{},'Cycle hours used'), ' \u2014 the driver\u2019s starting point on the 70h clock, tracked forward automatically and reset to a full 70h the moment a 34h+ break has passed since their last trip. The Timeline view shows this as hours remaining, counting down from 70h to 0h.']),
     el('div',{}, [el('b',{},'Time Off'), ' \u2014 vacation/leave days, managed from the \ud83d\udcc5\ufe0f Calendar tab. "Assign Drivers" will never place a driver on a day they\u2019re marked off, and they won\u2019t appear as a pickable option in the board\u2019s driver dropdown for that date either.'])
   ]));
 
