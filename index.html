@@ -2001,22 +2001,12 @@ function driverCycleHours(driverName){
     running += HOS_CONSUMED_HOURS[b.type]||0;
     prevEnd = e;
   });
-  // Live reset: only meaningful as of the REAL current moment, capped so we never look
-  // further ahead than the viewed week's end (no inventing a future reset early).
-  const now = new Date();
-  const refPoint = we < now ? we : now;
-  if(prevEnd && ((refPoint-prevEnd)/3600000) >= HOS_RESET_HOURS) running = 0;
   return running;
 }
 
 // Hours remaining before the driver hits the 70h/8-day cap -- a simple countdown
 // (70 -> 0) derived from driverCycleHours, clamped so a baseline entered above 70
 // (which the UI shouldn't normally allow, but just in case) never shows negative.
-function driverRemainingCycleHours(driverName){
-  const used = driverCycleHours(driverName);
-  return Math.max(0, Math.min(HOS_WEEKLY_LIMIT_HOURS, HOS_WEEKLY_LIMIT_HOURS - used));
-}
-
 const HOS_MIN_REST_HOURS = 10;
 
 // Checks the mandatory rest gap: a driver can't start a new block within 10h of
@@ -2221,7 +2211,7 @@ function renderTimeline(){
   wrap.appendChild(timelineSearchWrap);
 
   if(VIEW.timelineBy==='driver'){
-    wrap.appendChild(el('div',{class:'timeline-note'}, '\u24d8 Green bands mark detected 34h+ rest gaps between a driver\u2019s blocks (an HOS restart).'));
+    wrap.appendChild(el('div',{class:'timeline-note'}, '\u24d8 Cycle hours = each driver\u2019s starting cycle (set in Drivers) + scheduled block durations since, resetting to 0 after any 34h+ gap. This is a planning estimate from nominal Solo 1/2/5 windows, not verified drive time or certified HOS compliance. Green bands mark detected 34h+ reset gaps.'));
   }
 
   const inner = el('div',{class:'timeline-inner'});
@@ -2256,16 +2246,18 @@ function renderTimeline(){
       .filter(function(n, i, arr){ return arr.indexOf(n)===i; })
       .filter(function(n){ return driverWeeklyHours(n) > 0 || driverCycleHours(n) > 0; })
       .filter(function(n){ return !tq || n.toLowerCase().indexOf(tq)!==-1; })
-      .sort(function(a,b2){ return a.localeCompare(b2); });
+      .sort(function(a,b2){ return driverCycleHours(b2)-driverCycleHours(a); });
 
     if(names.length===0){
       inner.appendChild(el('div',{class:'timeline-empty'}, tq ? 'No drivers match "'+VIEW.timelineSearchQuery.trim()+'"' : 'No drivers scheduled this week'));
     }
 
     names.forEach(function(name){
+      const isFresh = driverIsFreshlyAvailable(name);
       const row = el('div',{class:'timeline-row'});
       row.appendChild(el('div',{class:'timeline-label'},[
-        el('div',{}, name)
+        el('div',{}, name),
+        isFresh ? el('div',{class:'fresh-badge', title:'Had a 34h+ break since their last trip \u2014 back to a full 70h right now'}, '\u2713 Available (fresh 70h)') : null
       ]));
       const track = el('div',{class:'timeline-track'});
       driverRestGaps(name).forEach(function(g){
@@ -2801,7 +2793,7 @@ function renderDriversPage(){
 
   page.appendChild(el('div',{class:'csv-note'}, [
     el('div',{}, [el('b',{},'Work days / Trip times / Runs'), ' \u2014 the driver\u2019s standing weekly schedule. Click "Assign Drivers" on the board to auto-fill blocks with no driver yet, matching by day, anchor time, and Solo type \u2014 while respecting the 10h minimum rest between trips and the 70h/8-day cycle cap.']),
-    el('div',{}, [el('b',{},'Cycle hours used'), ' \u2014 the driver\u2019s starting point on the 70h clock, tracked forward automatically and reset to a full 70h the moment a 34h+ break has passed since their last trip. The Timeline view shows this as hours remaining, counting down from 70h to 0h.']),
+    el('div',{}, [el('b',{},'Cycle hours used'), ' \u2014 the driver\u2019s starting point on the 70h clock, tracked forward automatically (Timeline view, shown as hours used out of 70) and reset to 0 the moment a 34h+ break has passed since their last trip.']),
     el('div',{}, [el('b',{},'Time Off'), ' \u2014 vacation/leave days, managed from the \ud83d\udcc5\ufe0f Calendar tab. "Assign Drivers" will never place a driver on a day they\u2019re marked off, and they won\u2019t appear as a pickable option in the board\u2019s driver dropdown for that date either.'])
   ]));
 
