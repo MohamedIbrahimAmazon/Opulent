@@ -286,18 +286,19 @@
     font-size:10px; color:var(--text-faint); text-decoration:underline; text-underline-offset:2px;
   }
   .actual-end-toggle:hover{ color:var(--amber); }
-  .actual-end-row{ display:flex; align-items:center; gap:4px; margin:6px 0 2px; flex-wrap:wrap; }
-  .actual-end-tag{ font-size:9.5px; color:var(--text-faint); white-space:nowrap; }
+  .actual-end-block{ margin:6px 0 2px; }
+  .actual-end-tag{ font-size:9.5px; color:var(--text-faint); white-space:nowrap; margin-bottom:3px; }
+  .actual-end-row{ display:flex; align-items:center; gap:3px; flex-wrap:nowrap; }
   .actual-end-date, .actual-end-time{
-    color-scheme: dark; font-size:10.5px; padding:2px 4px; line-height:1.4;
+    color-scheme: dark; font-size:10px; padding:2px 3px; line-height:1.3;
     background:var(--bg-card); border:1px solid var(--amber-dim); color:var(--text);
-    border-radius:4px; font-family:'JetBrains Mono',monospace;
+    border-radius:4px; font-family:'JetBrains Mono',monospace; min-width:0;
   }
-  .actual-end-date{ max-width:118px; }
-  .actual-end-time{ width:48px; text-align:center; }
+  .actual-end-date{ flex:1 1 92px; max-width:104px; }
+  .actual-end-time{ flex:0 0 40px; width:40px; text-align:center; padding-left:2px; padding-right:2px; }
   body.light .actual-end-date, body.light .actual-end-time{ color-scheme: light; }
   .actual-end-clear{
-    background:none; border:none; padding:0 2px; cursor:pointer; font-size:11px; line-height:1;
+    background:none; border:none; padding:0 2px; cursor:pointer; font-size:11px; line-height:1; flex:0 0 auto;
     color:var(--text-faint);
   }
   .actual-end-clear:hover{ color:var(--red); }
@@ -1237,6 +1238,7 @@ function blockMatchesTruckFilter(b){
   if(VIEW.truckTypeFilter==='needs-attention') return !b.rejected && (!b.driverName || !b.truckId);
   if(VIEW.truckTypeFilter==='missing-driver') return !b.rejected && !b.driverName;
   if(VIEW.truckTypeFilter==='missing-truck') return !b.rejected && !b.truckId;
+  if(VIEW.truckTypeFilter==='rejected') return !!b.rejected;
   if(!b.truckId) return false;
   const t = STATE.trucks.find(function(x){ return x.id===b.truckId; });
   if(!t) return false;
@@ -1246,7 +1248,7 @@ function blockMatchesTruckFilter(b){
   return true;
 }
 function isFocusFilter(){
-  return ['needs-attention','missing-driver','missing-truck'].indexOf(VIEW.truckTypeFilter)!==-1;
+  return ['needs-attention','missing-driver','missing-truck','rejected'].indexOf(VIEW.truckTypeFilter)!==-1;
 }
 
 function renderSearchBar(){
@@ -1265,6 +1267,7 @@ function renderSearchBar(){
     el('option',{value:'needs-attention', selected: VIEW.truckTypeFilter==='needs-attention'?'selected':null}, '\u26a0 Needs driver or truck'),
     el('option',{value:'missing-driver', selected: VIEW.truckTypeFilter==='missing-driver'?'selected':null}, '\u26a0 Missing a driver'),
     el('option',{value:'missing-truck', selected: VIEW.truckTypeFilter==='missing-truck'?'selected':null}, '\u26a0 Missing a truck'),
+    el('option',{value:'rejected', selected: VIEW.truckTypeFilter==='rejected'?'selected':null}, '\u2716 Rejected'),
     el('option',{value:'daycab', selected: VIEW.truckTypeFilter==='daycab'?'selected':null}, 'Daycab only'),
     el('option',{value:'sleeper', selected: VIEW.truckTypeFilter==='sleeper'?'selected':null}, 'Sleeper only'),
     el('option',{value:'solo5cap', selected: VIEW.truckTypeFilter==='solo5cap'?'selected':null}, 'Solo 5\u2011capable only')
@@ -2085,6 +2088,7 @@ function renderStats(){
   const blocks = currentWeekBlocks();
   const unassignedTruck = blocks.filter(function(b){ return !b.rejected && !b.truckId; }).length;
   const unassignedDriver = blocks.filter(function(b){ return !b.rejected && !b.driverName; }).length;
+  const rejectedCount = blocks.filter(function(b){ return b.rejected; }).length;
   const downTrucks = STATE.trucks.filter(function(t){ return t.status==='down'; }).length;
   const groundedTrucks = STATE.trucks.filter(function(t){ return t.status==='grounded'; }).length;
   const onDownTruck = blocks.filter(function(b){
@@ -2105,6 +2109,11 @@ function renderStats(){
     VIEW.searchQuery='';
     setMode('board');
   };
+  const jumpToRejected = function(){
+    VIEW.truckTypeFilter = (VIEW.truckTypeFilter==='rejected') ? 'all' : 'rejected';
+    VIEW.searchQuery='';
+    setMode('board');
+  };
   return el('div',{class:'stats'},[
     stat(blocks.length, 'Blocks this week'),
     stat(STATE.trucks.length, 'Total trucks'),
@@ -2112,6 +2121,7 @@ function renderStats(){
     stat(groundedTrucks, 'Trucks grounded', groundedTrucks?'warn':''),
     stat(unassignedTruck, 'No truck', unassignedTruck?'warn':'ok', unassignedTruck?jumpToMissingTruck:null, VIEW.truckTypeFilter==='missing-truck'),
     stat(unassignedDriver, 'No driver', unassignedDriver?'warn':'ok', unassignedDriver?jumpToMissingDriver:null, VIEW.truckTypeFilter==='missing-driver'),
+    stat(rejectedCount, 'Rejected', rejectedCount?'warn':'ok', rejectedCount?jumpToRejected:null, VIEW.truckTypeFilter==='rejected'),
     stat(onDownTruck, 'On a down truck', onDownTruck?'warn':'ok'),
   ]);
 }
@@ -2272,6 +2282,7 @@ function renderBoard(){
     if(VIEW.truckTypeFilter==='needs-attention') msg = '\u2705 Every block this week has a driver and a truck';
     else if(VIEW.truckTypeFilter==='missing-driver') msg = '\u2705 Every block this week has a driver';
     else if(VIEW.truckTypeFilter==='missing-truck') msg = '\u2705 Every block this week has a truck';
+    else if(VIEW.truckTypeFilter==='rejected') msg = '\u2705 No rejected blocks this week';
     else msg = 'No blocks match "'+VIEW.searchQuery.trim()+'" this week';
     board.appendChild(el('div',{class:'day-empty', style:'padding:40px; width:100%; text-align:center;'}, msg));
   }
@@ -2319,22 +2330,20 @@ function renderCard(b){
   }
   const aeParts = splitActualEnd(b.actualEnd);
   const actualEndSlot = b.actualEnd
-    ? el('div',{class:'actual-end-row'},[
-        el('span',{class:'actual-end-tag'}, '\ud83d\udd50 Actual end'),
+    ? el('div',{class:'actual-end-block'},[
+        el('div',{class:'actual-end-tag'}, '\ud83d\udd50 Actual end'),
         (function(){
           const dateEl = el('input',{type:'date', class:'actual-end-date', value: aeParts.date});
           const timeEl = el('input',{type:'text', class:'actual-end-time', value: aeParts.time, placeholder:'HH:MM', maxlength:'5', inputmode:'numeric'});
           dateEl.addEventListener('change', function(){ commitActualEnd(dateEl.value, timeEl.value.trim()); });
           timeEl.addEventListener('blur', function(){ commitActualEnd(dateEl.value, timeEl.value.trim()); });
-          const frag = document.createDocumentFragment();
-          frag.appendChild(dateEl); frag.appendChild(timeEl);
-          return frag;
-        })(),
-        el('button',{class:'actual-end-clear', title:'Clear \u2014 use the scheduled end time again', onclick:function(){
-          b.actualEnd = null;
-          logAction('Cleared actual end on block '+(b.blockId||b.id)+', back to scheduled');
-          saveState(); render();
-        }}, '\u2715')
+          const clearBtn = el('button',{class:'actual-end-clear', title:'Clear \u2014 use the scheduled end time again', onclick:function(){
+            b.actualEnd = null;
+            logAction('Cleared actual end on block '+(b.blockId||b.id)+', back to scheduled');
+            saveState(); render();
+          }}, '\u2715');
+          return el('div',{class:'actual-end-row'},[dateEl, timeEl, clearBtn]);
+        })()
       ])
     : el('button',{class:'actual-end-toggle', type:'button', title:'Log the real end time (24h) if this trip didn\u2019t end exactly on schedule',
         onclick:function(e){
@@ -2342,7 +2351,10 @@ function renderCard(b){
           const timeEl = el('input',{type:'text', class:'actual-end-time', placeholder:'HH:MM', maxlength:'5', inputmode:'numeric'});
           dateEl.addEventListener('change', function(){ commitActualEnd(dateEl.value, timeEl.value.trim()); });
           timeEl.addEventListener('blur', function(){ commitActualEnd(dateEl.value, timeEl.value.trim()); });
-          const wrap = el('div',{class:'actual-end-row'},[ el('span',{class:'actual-end-tag'}, '\ud83d\udd50'), dateEl, timeEl ]);
+          const wrap = el('div',{class:'actual-end-block'},[
+            el('div',{class:'actual-end-tag'}, '\ud83d\udd50 Actual end'),
+            el('div',{class:'actual-end-row'},[dateEl, timeEl])
+          ]);
           e.target.replaceWith(wrap);
           timeEl.focus();
         }
@@ -2467,7 +2479,7 @@ function renderCard(b){
     if(t.id===b.truckId) return true; // always show the currently assigned truck, even if down/grounded/busy, so it stays visible/reassignable
     if(t.status!=='active') return false;
     return truckIsFreeFor(t.id, b);
-  });
+  }).sort(function(a,c){ return a.number.localeCompare(c.number, undefined, {numeric:true}); });
   activeTrucks.forEach(function(t){
     const typeLabel = TRUCK_TYPES.find(function(tt){ return tt.value===(t.vehicleType||'daycab'); });
     const label = (t.status==='down' ? ' (Down)' : (t.status==='grounded' ? ' (Grounded)' : '')) + ' \u00b7 ' + (typeLabel?typeLabel.label:'');
