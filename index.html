@@ -453,7 +453,7 @@ let isBoardLoading = true; // true until the shared board_state has actually bee
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null, timelineSearchQuery:'' };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null, timelineSearchQuery:'', timelineSort:'cycle' };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 let currentUser = null; // { id, email } once signed in, else null
@@ -1582,10 +1582,10 @@ function renderHeader(){
     render();
   }}, localTheme==='light' ? '\u2600\ufe0f' : '\ud83c\udf19');
   const actions = el('div',{class:'actions'},[
-    el('label',{class:'btn primary', for:'csvInput'}, '\u2b06 Upload Trips CSV'),
-    upload,
-    el('button',{class:'btn primary', title:'Auto-fill drivers on this week\u2019s unassigned blocks, using each driver\u2019s schedule', onclick:function(){ assignDriversAutomatically(); }}, '\ud83e\udd16 Assign Drivers'),
-    el('button',{class:'btn primary', title:'Auto-fill trucks for blocks that have a driver but no truck yet', onclick:function(){ assignTrucksAutomatically(); }}, '\ud83d\ude9a Assign Trucks'),
+    VIEW.mode==='board' ? el('label',{class:'btn primary', for:'csvInput'}, '\u2b06 Upload Trips CSV') : null,
+    VIEW.mode==='board' ? upload : null,
+    VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill drivers on this week\u2019s unassigned blocks, using each driver\u2019s schedule', onclick:function(){ assignDriversAutomatically(); }}, '\ud83e\udd16 Assign Drivers') : null,
+    VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill trucks for blocks that have a driver but no truck yet', onclick:function(){ assignTrucksAutomatically(); }}, '\ud83d\ude9a Assign Trucks') : null,
     el('button',{class:'btn'+(VIEW.mode==='board'?' active-mode':''), onclick:function(){setMode('board');}}, '\ud83d\udcc5 Board'),
     el('button',{class:'btn'+(VIEW.mode==='timeline'?' active-mode':''), onclick:function(){setMode('timeline');}}, '\ud83d\udcca Timeline'),
     el('button',{class:'btn'+(VIEW.mode==='drivers'?' active-mode':''), onclick:function(){setMode('drivers');}}, '\ud83d\udc64 Drivers'),
@@ -1940,6 +1940,11 @@ function driverWeeklyHours(driverName){
   blocks.forEach(function(b){ mins += DUR[b.type] || 0; });
   return mins/60;
 }
+function driverWeeklyTripCount(driverName){
+  return currentWeekBlocks().filter(function(b){
+    return !b.rejected && (b.driverName||'').trim().toLowerCase()===driverName.trim().toLowerCase();
+  }).length;
+}
 
 // Looks across ALL of this driver's active blocks (any week) for a gap >= 34h between
 // one block ending and the next starting -- an HOS "34-hour restart".
@@ -2198,6 +2203,14 @@ function renderTimeline(){
   if(VIEW.timelineSearchQuery.trim()){
     timelineSearchWrap.appendChild(el('button',{class:'search-clear', onclick:function(){ VIEW.timelineSearchQuery=''; render(); }}, '\u2715'));
   }
+  if(VIEW.timelineBy==='driver'){
+    timelineSearchWrap.appendChild(el('select',{style:'background:var(--bg-card); border:1px solid var(--line); color:var(--text); padding:9px 10px; border-radius:8px; font-size:13px;',
+      onchange:function(e){ VIEW.timelineSort = e.target.value; render(); }},[
+      el('option',{value:'cycle', selected: VIEW.timelineSort==='cycle'?'selected':null}, 'Sort: Cycle hours (high\u2192low)'),
+      el('option',{value:'name', selected: VIEW.timelineSort==='name'?'selected':null}, 'Sort: Name (A\u2192Z)'),
+      el('option',{value:'trips', selected: VIEW.timelineSort==='trips'?'selected':null}, 'Sort: Trips this week (high\u2192low)')
+    ]));
+  }
   wrap.appendChild(timelineSearchWrap);
 
   if(VIEW.timelineBy==='driver'){
@@ -2234,9 +2247,22 @@ function renderTimeline(){
     const tq = VIEW.timelineSearchQuery.trim().toLowerCase();
     const names = STATE.drivers.map(function(d){ return d.name; })
       .filter(function(n, i, arr){ return arr.indexOf(n)===i; })
-      .filter(function(n){ return driverWeeklyHours(n) > 0 || driverCycleHours(n) > 0; })
+      // Only drivers with an actual trip THIS week -- driverCycleHours can be non-zero from
+      // older weeks even with zero trips now, which used to leave idle drivers stranded in
+      // the middle of the sorted list instead of just not showing up at all.
+      .filter(function(n){ return driverWeeklyTripCount(n) > 0; })
       .filter(function(n){ return !tq || n.toLowerCase().indexOf(tq)!==-1; })
-      .sort(function(a,b2){ return driverCycleHours(b2)-driverCycleHours(a); });
+      .sort(function(a,b2){
+        // Inactive drivers always sink to the bottom, regardless of the chosen sort.
+        const da = STATE.drivers.find(function(d){ return d.name===a; });
+        const db = STATE.drivers.find(function(d){ return d.name===b2; });
+        const aInactive = da && da.active===false;
+        const bInactive = db && db.active===false;
+        if(aInactive !== bInactive) return aInactive ? 1 : -1;
+        if(VIEW.timelineSort==='name') return a.localeCompare(b2);
+        if(VIEW.timelineSort==='trips') return driverWeeklyTripCount(b2)-driverWeeklyTripCount(a);
+        return driverCycleHours(b2)-driverCycleHours(a);
+      });
 
     if(names.length===0){
       inner.appendChild(el('div',{class:'timeline-empty'}, tq ? 'No drivers match "'+VIEW.timelineSearchQuery.trim()+'"' : 'No drivers scheduled this week'));
