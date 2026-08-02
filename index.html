@@ -453,7 +453,7 @@ let isBoardLoading = true; // true until the shared board_state has actually bee
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null, timelineSearchQuery:'', timelineSort:'cycle' };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null, timelineSearchQuery:'', timelineSort:'name' };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 let currentUser = null; // { id, email } once signed in, else null
@@ -1602,7 +1602,7 @@ function renderHeader(){
     renderUserBadge(),
     themeBtn
   ]);
-  const dangerZone = isAdmin() ? el('div',{class:'danger-zone'},[
+  const dangerZone = (isAdmin() && VIEW.mode==='board') ? el('div',{class:'danger-zone'},[
     el('button',{class:'btn', title:'Delete every block in the currently viewed week (trucks and drivers are untouched)', onclick:function(){ clearCurrentWeek(); }}, '\ud83e\uddf9 Clear This Week')
   ]) : null;
   return el('header',{class:'top'},[
@@ -2206,7 +2206,6 @@ function renderTimeline(){
   if(VIEW.timelineBy==='driver'){
     timelineSearchWrap.appendChild(el('select',{style:'background:var(--bg-card); border:1px solid var(--line); color:var(--text); padding:9px 10px; border-radius:8px; font-size:13px;',
       onchange:function(e){ VIEW.timelineSort = e.target.value; render(); }},[
-      el('option',{value:'cycle', selected: VIEW.timelineSort==='cycle'?'selected':null}, 'Sort: Cycle hours (high\u2192low)'),
       el('option',{value:'name', selected: VIEW.timelineSort==='name'?'selected':null}, 'Sort: Name (A\u2192Z)'),
       el('option',{value:'trips', selected: VIEW.timelineSort==='trips'?'selected':null}, 'Sort: Trips this week (high\u2192low)')
     ]));
@@ -2245,23 +2244,26 @@ function renderTimeline(){
 
   if(VIEW.timelineBy==='driver'){
     const tq = VIEW.timelineSearchQuery.trim().toLowerCase();
-    const names = STATE.drivers.map(function(d){ return d.name; })
-      .filter(function(n, i, arr){ return arr.indexOf(n)===i; })
-      // Only drivers with an actual trip THIS week -- driverCycleHours can be non-zero from
-      // older weeks even with zero trips now, which used to leave idle drivers stranded in
-      // the middle of the sorted list instead of just not showing up at all.
-      .filter(function(n){ return driverWeeklyTripCount(n) > 0; })
+    const uniqueNames = STATE.drivers.map(function(d){ return d.name; })
+      .filter(function(n, i, arr){ return arr.indexOf(n)===i; });
+
+    // Compute each driver's stats once up front instead of recomputing them repeatedly
+    // during filtering/sorting -- this is what made switching to this tab feel slow.
+    const statsByName = {};
+    uniqueNames.forEach(function(n){
+      const d = STATE.drivers.find(function(x){ return x.name===n; });
+      statsByName[n] = { trips: driverWeeklyTripCount(n), active: !d || d.active!==false };
+    });
+
+    const names = uniqueNames
+      .filter(function(n){ return statsByName[n].trips > 0; })
       .filter(function(n){ return !tq || n.toLowerCase().indexOf(tq)!==-1; })
       .sort(function(a,b2){
         // Inactive drivers always sink to the bottom, regardless of the chosen sort.
-        const da = STATE.drivers.find(function(d){ return d.name===a; });
-        const db = STATE.drivers.find(function(d){ return d.name===b2; });
-        const aInactive = da && da.active===false;
-        const bInactive = db && db.active===false;
-        if(aInactive !== bInactive) return aInactive ? 1 : -1;
-        if(VIEW.timelineSort==='name') return a.localeCompare(b2);
-        if(VIEW.timelineSort==='trips') return driverWeeklyTripCount(b2)-driverWeeklyTripCount(a);
-        return driverCycleHours(b2)-driverCycleHours(a);
+        const sa = statsByName[a], sb = statsByName[b2];
+        if(sa.active !== sb.active) return sa.active ? -1 : 1;
+        if(VIEW.timelineSort==='trips') return sb.trips - sa.trips;
+        return a.localeCompare(b2);
       });
 
     if(names.length===0){
