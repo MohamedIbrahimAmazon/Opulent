@@ -191,7 +191,7 @@
   }
   .pill-toggle.active{ background:var(--amber); color:#1a1204; border-color:var(--amber); font-weight:600; }
   .timeline-note{ font-size:11px; color:var(--text-dim); background:var(--bg-panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin-bottom:14px; line-height:1.6; }
-  .timeline-wrap{ overflow-x:auto; }
+  .timeline-wrap{ overflow-x:auto; overflow-y:visible; }
   .timeline-inner{ min-width:820px; background:var(--bg-panel); border:1px solid var(--line); border-radius:12px; }
   .timeline-axis{ display:flex; border-bottom:1px solid var(--line); background:var(--bg-card); position:sticky; top:0; z-index:5; border-radius:12px 12px 0 0; }
   .timeline-axis-label{ width:150px; flex-shrink:0; }
@@ -3320,7 +3320,7 @@ document.addEventListener('keydown', function(e){
 });
 
 (async function init(){
-  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-gap-visibility', 'color:#e8a33d; font-weight:bold; font-size:13px;');
+  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-sticky-fix', 'color:#e8a33d; font-weight:bold; font-size:13px;');
   VIEW.weekStart = getWeekStart(new Date());
   try{
     const savedWeek = localStorage.getItem(WEEK_PREF_KEY);
