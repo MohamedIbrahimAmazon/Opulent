@@ -203,7 +203,6 @@
   .timeline-label .hrs{ font-size:10px; color:var(--text-dim); margin-top:2px; font-weight:500; font-family:'JetBrains Mono',monospace; }
   .timeline-label .hrs.warn{ color:var(--amber); font-weight:700; }
   .timeline-label .hrs.over{ color:var(--red); font-weight:700; }
-  .fresh-badge{ font-size:9.5px; color:var(--green); font-weight:700; margin-top:2px; }
   .timeline-track{
     position:relative; flex:1; height:32px; margin:0 4px;
     background-image: linear-gradient(to right, var(--line-soft) 1px, transparent 1px);
@@ -222,8 +221,8 @@
     border-left:1px dashed var(--green); border-right:1px dashed var(--green);
   }
   .timeline-gap{
-    position:absolute; top:0; bottom:0; background: rgba(150,150,160,0.10);
-    border-left:1px dashed var(--line); border-right:1px dashed var(--line);
+    position:absolute; top:0; bottom:0; background: rgba(120,140,255,0.14);
+    border-left:1px dashed var(--text-faint); border-right:1px dashed var(--text-faint);
   }
   .timeline-empty{ padding:30px; text-align:center; color:var(--text-dim); font-size:12.5px; }
   .drivers-page{ background:var(--bg-panel); border:1px solid var(--line); border-radius:12px; padding:20px; }
@@ -1949,19 +1948,6 @@ function driverWeeklyHours(driverName){
 // since then with no newer block yet. The main "Xh used / 70h cycle" total only updates once
 // a new block actually exists to measure the reset against, so this is a separate live badge
 // that tells you they're effectively back to a fresh 70h right now, even before that happens.
-function driverIsFreshlyAvailable(driverName){
-  const blocks = STATE.blocks.filter(function(b){
-    return !b.rejected && (b.driverName||'').trim().toLowerCase()===driverName.trim().toLowerCase();
-  }).sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
-  if(blocks.length===0) return false;
-  const last = blocks[blocks.length-1];
-  const lastEnd = blockEndDT(last);
-  const now = new Date();
-  if(lastEnd > now) return false; // still mid-trip, or their last block hasn't happened yet
-  const gapHours = (now.getTime() - lastEnd.getTime())/3600000;
-  return gapHours >= HOS_RESET_HOURS;
-}
-
 function driverRestGaps(driverName){
   const blocks = STATE.blocks.filter(function(b){
     return !b.rejected && (b.driverName||'').trim().toLowerCase()===driverName.trim().toLowerCase();
@@ -2257,11 +2243,9 @@ function renderTimeline(){
     }
 
     names.forEach(function(name){
-      const isFresh = driverIsFreshlyAvailable(name);
       const row = el('div',{class:'timeline-row'});
       row.appendChild(el('div',{class:'timeline-label'},[
-        el('div',{}, name),
-        isFresh ? el('div',{class:'fresh-badge', title:'Had a 34h+ break since their last trip \u2014 back to a full 70h right now'}, '\u2713 Available (fresh 70h)') : null
+        el('div',{}, name)
       ]));
       const track = el('div',{class:'timeline-track'});
       driverRestGaps(name).forEach(function(g){
@@ -3336,7 +3320,7 @@ document.addEventListener('keydown', function(e){
 });
 
 (async function init(){
-  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-timeline-gaps', 'color:#e8a33d; font-weight:bold; font-size:13px;');
+  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-gap-visibility', 'color:#e8a33d; font-weight:bold; font-size:13px;');
   VIEW.weekStart = getWeekStart(new Date());
   try{
     const savedWeek = localStorage.getItem(WEEK_PREF_KEY);
