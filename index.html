@@ -1121,6 +1121,35 @@ function renderInner(){
 // window scroll + the open modal's internal scroll (and focus/cursor, via
 // withFocusPreserved) around every render, so typing into a field or a background update
 // never jumps you back to the top.
+// Simple undo: a rolling history of full-board snapshots, one captured after every render.
+// Since almost every mutation in this app is followed by a render(), this naturally covers
+// every kind of edit (blocks, trucks, drivers, calendar, etc.) without needing to hook into
+// each individual action. Pure navigation (switching tabs, opening a modal) doesn't change
+// STATE, so it just re-pushes an identical snapshot, which is skipped.
+let undoHistory = [];
+const MAX_UNDO = 25;
+function pushUndoSnapshot(){
+  try{
+    const snap = JSON.stringify(STATE);
+    if(undoHistory.length===0 || undoHistory[undoHistory.length-1] !== snap){
+      undoHistory.push(snap);
+      if(undoHistory.length > MAX_UNDO) undoHistory.shift();
+    }
+  }catch(e){ /* non-critical */ }
+}
+function undoLastChange(){
+  if(undoHistory.length < 2){ showToast('Nothing to undo'); return; }
+  undoHistory.pop(); // discard the current state we're undoing away from
+  const prev = undoHistory[undoHistory.length-1];
+  try{
+    STATE = JSON.parse(prev);
+  }catch(e){ showToast('Could not undo', true); return; }
+  logAction('Undid last change');
+  saveState();
+  showToast('\u21b6 Undid last change');
+  render();
+}
+
 function render(){
   invalidateBlockIndexCache();
   const winY = window.scrollY;
@@ -1132,6 +1161,7 @@ function render(){
     const modalBodyAfter = document.querySelector('.modal-body');
     if(modalBodyAfter) modalBodyAfter.scrollTop = modalY;
   }
+  pushUndoSnapshot();
 }
 
 const MODE_PREF_KEY = 'board-mode-pref';
@@ -1624,6 +1654,7 @@ function renderHeader(){
     el('button',{class:'btn'+(VIEW.mode==='drivers'?' active-mode':''), onclick:function(){setMode('drivers');}}, '\ud83d\udc64 Drivers'),
     el('button',{class:'btn'+(VIEW.mode==='calendar'?' active-mode':''), title:'Manage driver vacation / time-off days', onclick:function(){setMode('calendar');}}, '\ud83d\udcc5\ufe0f Calendar'),
     el('button',{class:'btn', onclick:function(){VIEW.showTrucks=true; render();}}, '\ud83d\ude9a Trucks'),
+    isAdmin() ? el('button',{class:'btn', title:'Undo the last change (Ctrl+Z)', onclick:function(){ undoLastChange(); }}, '\u21b6 Undo') : null,
     isAdmin() ? el('button',{class:'btn', title:'View and restore previous saved versions', onclick:function(){ openHistory(); }}, '\ud83d\udd50 History') : null,
     isAdmin() ? el('button',{class:'btn', title:'See who did what, and when', onclick:function(){ openActivityLog(); }}, '\ud83d\udcdd Activity') : null,
     isAdmin() ? el('button',{class:'btn', title:'Invite a new person by email', onclick:function(){ promptInvite(); }}, '\u2795 Invite') : null,
@@ -3380,11 +3411,27 @@ function closeAnyOpenModal(){
 document.addEventListener('keydown', function(e){
   if(e.key==='Escape'){
     closeAnyOpenModal();
+    return;
+  }
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  const isTyping = tag==='INPUT' || tag==='TEXTAREA' || tag==='SELECT' || (document.activeElement && document.activeElement.isContentEditable);
+  if(isTyping) return; // never hijack a shortcut while the person is typing/selecting somewhere
+
+  const isUndoShortcut = (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key==='z' || e.key==='Z');
+  if(isUndoShortcut){
+    if(!isAdmin()){ return; }
+    e.preventDefault();
+    undoLastChange();
+    return;
+  }
+  if(VIEW.mode==='board'){
+    if(e.key==='ArrowLeft'){ e.preventDefault(); VIEW.weekStart=addDays(VIEW.weekStart,-7); render(); }
+    else if(e.key==='ArrowRight'){ e.preventDefault(); VIEW.weekStart=addDays(VIEW.weekStart,7); render(); }
   }
 });
 
 (async function init(){
-  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-cache-invalidation-fix', 'color:#e8a33d; font-weight:bold; font-size:13px;');
+  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-undo-shortcuts', 'color:#e8a33d; font-weight:bold; font-size:13px;');
   VIEW.weekStart = getWeekStart(new Date());
   try{
     const savedWeek = localStorage.getItem(WEEK_PREF_KEY);
