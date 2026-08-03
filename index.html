@@ -1697,6 +1697,7 @@ function reassignBlocksOffDriver(driver, fromISO, toISO){
   let reassigned=0, freed=0;
   affected.forEach(function(b){
     b.driverName = null;
+    invalidateBlockIndexCache(); // this block's own driver assignment just changed
     const matches = STATE.drivers.filter(function(d2){
       if(d2.id===driver.id) return false;
       if(d2.active===false) return false;
@@ -1716,7 +1717,7 @@ function reassignBlocksOffDriver(driver, fromISO, toISO){
       if(aDays !== cDays) return aDays - cDays;
       return a.name.localeCompare(c.name);
     });
-    if(matches.length>0){ b.driverName = matches[0].name; reassigned++; }
+    if(matches.length>0){ b.driverName = matches[0].name; reassigned++; invalidateBlockIndexCache(); }
     else freed++;
   });
 
@@ -1764,6 +1765,7 @@ function assignDriversAutomatically(){
       });
       b.driverName = matches[0].name;
       assigned++;
+      invalidateBlockIndexCache(); // next block in this loop must see this assignment
     } else {
       // Distinguish "no schedule matched at all" from "matched a schedule but HOS/70h/leave blocked it"
       const scheduleMatches = STATE.drivers.filter(function(d){
@@ -1818,6 +1820,7 @@ function reassignBlocksOffTruck(truck){
   let reassigned=0, freed=0;
   affected.forEach(function(b){
     b.truckId = null;
+    invalidateBlockIndexCache(); // this block's own truck assignment just changed
     const candidates = STATE.trucks.filter(function(t2){
       if(t2.id===truck.id) return false;
       if(t2.status!=='active') return false;
@@ -1827,7 +1830,7 @@ function reassignBlocksOffTruck(truck){
       if(checkConflict(t2.id, Object.assign({}, b, {truckId: t2.id}))) return false;
       return true;
     }).sort(function(a,c){ return a.number.localeCompare(c.number); });
-    if(candidates.length>0){ b.truckId = candidates[0].id; reassigned++; }
+    if(candidates.length>0){ b.truckId = candidates[0].id; reassigned++; invalidateBlockIndexCache(); }
     else freed++;
   });
 
@@ -1892,6 +1895,7 @@ function assignTrucksAutomatically(){
     if(chosen){
       b.truckId = chosen.id;
       if(usedFallback) assignedFallback++; else assignedPreferred++;
+      invalidateBlockIndexCache(); // next candidate block in this loop must see this assignment
     } else {
       noneAvailable++;
     }
@@ -1916,6 +1920,7 @@ function assignTrucksAutomatically(){
         b.truckId = closestCandidates[0].id;
         assignedClosest++;
         noneAvailable--;
+        invalidateBlockIndexCache();
       }
     });
   }
@@ -1938,6 +1943,7 @@ function assignTrucksAutomatically(){
     if(candidates2.length>0){
       b.truckId = candidates2[0].id;
       assignedNoDriver++;
+      invalidateBlockIndexCache();
     } else {
       noneAvailableNoDriver++;
     }
@@ -3378,7 +3384,7 @@ document.addEventListener('keydown', function(e){
 });
 
 (async function init(){
-  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-perf-cache', 'color:#e8a33d; font-weight:bold; font-size:13px;');
+  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-cache-invalidation-fix', 'color:#e8a33d; font-weight:bold; font-size:13px;');
   VIEW.weekStart = getWeekStart(new Date());
   try{
     const savedWeek = localStorage.getItem(WEEK_PREF_KEY);
