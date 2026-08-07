@@ -453,7 +453,7 @@ let isBoardLoading = true; // true until the shared board_state has actually bee
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null, timelineSearchQuery:'', timelineSort:'name' };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null, timelineSearchQuery:'', timelineSort:'name', showUsers:false, usersList:null, usersLoading:false };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 let currentUser = null; // { id, email } once signed in, else null
@@ -648,6 +648,79 @@ async function promptInvite(){
   }
 }
 
+// Users panel: lets the admin see everyone with a login (via the admin-users Edge Function,
+// same pattern as invite-user), deactivate/reactivate or delete an account, and send a
+// password reset email. Phone numbers are just a small directory kept in the normal shared
+// board data (STATE.userDirectory) -- Supabase Auth has no concept of "phone note" for us.
+async function openUsersPanel(){
+  if(!isAdmin()){ return; }
+  VIEW.showUsers = true;
+  VIEW.usersLoading = true;
+  VIEW.usersList = null;
+  render();
+  try{
+    const { data, error } = await sb.functions.invoke('admin-users', { body: { action: 'list' } });
+    if(error) throw error;
+    if(data && data.error) throw new Error(data.error);
+    VIEW.usersList = (data && data.users) || [];
+  }catch(e){
+    console.error('Could not load users', e);
+    showToast('Could not load users \u2014 check console / Edge Function setup', true);
+    VIEW.usersList = [];
+  }
+  VIEW.usersLoading = false;
+  render();
+}
+
+async function setUserBanned(userId, email, banned){
+  if(!isAdmin()) return;
+  showToast(banned ? ('Deactivating '+email+'\u2026') : ('Reactivating '+email+'\u2026'));
+  try{
+    const { data, error } = await sb.functions.invoke('admin-users', { body: { action: banned ? 'ban' : 'unban', userId: userId } });
+    if(error) throw error;
+    if(data && data.error) throw new Error(data.error);
+    logAction((banned ? 'Deactivated' : 'Reactivated')+' user account: '+email);
+    showToast(email+(banned ? ' deactivated' : ' reactivated'));
+    openUsersPanel();
+  }catch(e){
+    console.error('Could not update user', e);
+    showToast('Could not update user \u2014 check console / Edge Function setup', true);
+  }
+}
+
+async function deleteUserAccount(userId, email){
+  if(!isAdmin()) return;
+  if(!window.confirm('Permanently delete the login for '+email+'? This can\u2019t be undone \u2014 they\u2019ll need a brand new invite to get back in.')) return;
+  showToast('Deleting '+email+'\u2026');
+  try{
+    const { data, error } = await sb.functions.invoke('admin-users', { body: { action: 'delete', userId: userId } });
+    if(error) throw error;
+    if(data && data.error) throw new Error(data.error);
+    logAction('Deleted user account: '+email);
+    showToast(email+' deleted');
+    if(STATE.userDirectory) delete STATE.userDirectory[email];
+    saveState();
+    openUsersPanel();
+  }catch(e){
+    console.error('Could not delete user', e);
+    showToast('Could not delete user \u2014 check console / Edge Function setup', true);
+  }
+}
+
+async function sendPasswordReset(email){
+  if(!isAdmin()) return;
+  showToast('Sending password reset to '+email+'\u2026');
+  try{
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin + window.location.pathname });
+    if(error) throw error;
+    logAction('Sent password reset email to: '+email);
+    showToast('Password reset email sent to '+email);
+  }catch(e){
+    console.error('Could not send password reset', e);
+    showToast('Could not send password reset \u2014 check console', true);
+  }
+}
+
 // Best-effort append-only log of who did what. Never blocks the action it's attached to.
 function logAction(description){
   if(!sb || !currentUser) return;
@@ -696,6 +769,7 @@ async function loadState(){
     }catch(e){}
   }
   if(!STATE.trucks) STATE.trucks=[];
+      if(!STATE.userDirectory) STATE.userDirectory={};
   if(!STATE.drivers) STATE.drivers=[];
   if(!STATE.blocks) STATE.blocks=[];
   if(!STATE.theme) STATE.theme='dark';
@@ -810,6 +884,7 @@ function subscribeRealtime(){
       lastKnownUpdatedAt = (payload.new && payload.new.updated_at) || lastKnownUpdatedAt;
       lastKnownUpdatedBy = incomingBy || lastKnownUpdatedBy;
       if(!STATE.trucks) STATE.trucks=[];
+      if(!STATE.userDirectory) STATE.userDirectory={};
       if(!STATE.drivers) STATE.drivers=[];
       if(!STATE.blocks) STATE.blocks=[];
       if(!STATE.theme) STATE.theme='dark';
@@ -890,6 +965,7 @@ async function restoreBackup(id){
     if(data && data.data){
       STATE = data.data;
       if(!STATE.trucks) STATE.trucks=[];
+      if(!STATE.userDirectory) STATE.userDirectory={};
       if(!STATE.drivers) STATE.drivers=[];
       if(!STATE.blocks) STATE.blocks=[];
       if(!STATE.theme) STATE.theme='dark';
@@ -1110,6 +1186,7 @@ function renderInner(){
   if(VIEW.editingCsv) app.appendChild(renderCsvModal());
   if(VIEW.showHistory) app.appendChild(renderHistoryModal());
   if(VIEW.showActivity) app.appendChild(renderActivityModal());
+  if(VIEW.showUsers) app.appendChild(renderUsersModal());
   if(VIEW.showPdfOptions) app.appendChild(renderPdfOptionsModal());
   if(VIEW.calendarDayModal) app.appendChild(renderCalendarDayModal());
   ensureDatalist();
@@ -1477,6 +1554,7 @@ function handleImportFile(e){
       if(!data || typeof data!=='object') throw new Error('bad file');
       STATE = data;
       if(!STATE.trucks) STATE.trucks=[];
+      if(!STATE.userDirectory) STATE.userDirectory={};
       if(!STATE.drivers) STATE.drivers=[];
       if(!STATE.blocks) STATE.blocks=[];
       if(!STATE.theme) STATE.theme='dark';
@@ -1537,6 +1615,66 @@ function renderActivityModal(){
     });
     body.appendChild(table);
   }
+  modal.appendChild(body);
+  overlay.appendChild(modal);
+  return overlay;
+}
+
+function renderUsersModal(){
+  const overlay = el('div',{class:'overlay', onclick:function(e){ if(e.target===overlay){ VIEW.showUsers=false; render(); } }});
+  const modal = el('div',{class:'modal wide'});
+  modal.appendChild(el('div',{class:'modal-head'},[
+    el('h2',{}, '\ud83d\udc65 Users'),
+    el('button',{class:'x', onclick:function(){ VIEW.showUsers=false; render(); }}, '\u2715')
+  ]));
+  const body = el('div',{class:'modal-body'});
+
+  if(!sb){
+    body.appendChild(el('div',{class:'empty-state'}, 'User management needs a connected shared board (Supabase). Not available in local mode.'));
+  } else if(VIEW.usersLoading){
+    body.appendChild(el('div',{class:'empty-state'}, 'Loading\u2026'));
+  } else if(!VIEW.usersList || VIEW.usersList.length===0){
+    body.appendChild(el('div',{class:'empty-state'}, 'No users found, or the list couldn\u2019t load \u2014 check console / Edge Function setup.'));
+  } else {
+    if(!STATE.userDirectory) STATE.userDirectory = {};
+    body.appendChild(el('div',{class:'csv-note'}, [
+      el('div',{}, [el('b',{},'Deactivate'), ' \u2014 blocks their login instantly without deleting the account; reversible any time with Reactivate.']),
+      el('div',{}, [el('b',{},'Delete'), ' \u2014 permanently removes their login. They\u2019d need a brand new invite to come back.']),
+      el('div',{}, [el('b',{},'Reset password'), ' \u2014 emails them a link to choose a new password.'])
+    ]));
+    const table = el('table',{class:'list'});
+    table.appendChild(el('tr',{},[
+      el('th',{},'Email'), el('th',{},'Phone'), el('th',{},'Status'), el('th',{},'Last sign-in'), el('th',{},'')
+    ]));
+    VIEW.usersList.slice().sort(function(a,b){ return (a.email||'').localeCompare(b.email||''); }).forEach(function(u){
+      const isBanned = !!(u.banned_until && new Date(u.banned_until) > new Date());
+      const isSelf = currentUser && u.email && u.email.toLowerCase()===currentUser.email.toLowerCase();
+      const phoneInput = el('input',{value:(STATE.userDirectory[u.email]||{}).phone||'', placeholder:'Add phone\u2026',
+        style:'width:130px; background:var(--bg-card); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:5px 7px; font-size:12px;',
+        onblur:function(e){
+          const v = e.target.value.trim();
+          if(!STATE.userDirectory[u.email]) STATE.userDirectory[u.email] = {};
+          STATE.userDirectory[u.email].phone = v;
+          saveState();
+        }
+      });
+      const statusBadge = el('span',{class:'pill '+(isBanned?'down':'active')}, isBanned ? '\u26d4 Deactivated' : '\u2713 Active');
+      const actions = el('div',{style:'display:flex; gap:6px; flex-wrap:wrap;'},[
+        el('button',{class:'btn small', title:'Email them a password reset link', onclick:function(){ sendPasswordReset(u.email); }}, 'Reset PW'),
+        isSelf ? null : el('button',{class:'btn small', title: isBanned?'Restore their login':'Block their login (reversible)', onclick:function(){ setUserBanned(u.id, u.email, !isBanned); }}, isBanned ? 'Reactivate' : 'Deactivate'),
+        isSelf ? null : el('button',{class:'btn small', style:'color:var(--red); border-color:var(--red);', title:'Permanently delete this login', onclick:function(){ deleteUserAccount(u.id, u.email); }}, 'Delete')
+      ]);
+      table.appendChild(el('tr',{},[
+        el('td',{}, u.email + (isSelf ? ' (you)' : '')),
+        el('td',{}, phoneInput),
+        el('td',{}, statusBadge),
+        el('td',{class:'mono'}, u.last_sign_in_at ? fmtDateTime(u.last_sign_in_at) : '\u2014'),
+        el('td',{}, actions)
+      ]));
+    });
+    body.appendChild(table);
+  }
+
   modal.appendChild(body);
   overlay.appendChild(modal);
   return overlay;
@@ -1627,6 +1765,7 @@ function renderHeader(){
     isAdmin() ? el('button',{class:'btn', title:'View and restore previous saved versions', onclick:function(){ openHistory(); }}, '\ud83d\udd50 History') : null,
     isAdmin() ? el('button',{class:'btn', title:'See who did what, and when', onclick:function(){ openActivityLog(); }}, '\ud83d\udcdd Activity') : null,
     isAdmin() ? el('button',{class:'btn', title:'Invite a new person by email', onclick:function(){ promptInvite(); }}, '\u2795 Invite') : null,
+    isAdmin() ? el('button',{class:'btn', title:'Manage who has a login \u2014 deactivate, delete, reset password', onclick:function(){ openUsersPanel(); }}, '\ud83d\udc65 Users') : null,
     el('button',{class:'btn', title:'Download a PDF of this week\u2019s driver / type / truck assignments', onclick:function(){ downloadAssignmentPDF(); }}, '\ud83d\udcc4 Download PDF'),
     isAdmin() ? el('button',{class:'btn', title:'Download a backup file of all your data', onclick:exportData}, '\u2b07 Export') : null,
     isAdmin() ? el('label',{class:'btn', for:'importInput', title:'Restore data from a backup file'}, '\u2b06 Import') : null,
@@ -3371,6 +3510,7 @@ function closeAnyOpenModal(){
   if(VIEW.editingCsv){ VIEW.editingCsv=null; closed=true; }
   if(VIEW.showHistory){ VIEW.showHistory=false; closed=true; }
   if(VIEW.showActivity){ VIEW.showActivity=false; closed=true; }
+  if(VIEW.showUsers){ VIEW.showUsers=false; closed=true; }
   if(VIEW.showPdfOptions){ VIEW.showPdfOptions=false; closed=true; }
   if(VIEW.calendarDayModal){ VIEW.calendarDayModal=null; closed=true; }
   if(closed) render();
@@ -3393,7 +3533,7 @@ document.addEventListener('keydown', function(e){
 });
 
 (async function init(){
-  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-undo-removed', 'color:#e8a33d; font-weight:bold; font-size:13px;');
+  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-users-panel', 'color:#e8a33d; font-weight:bold; font-size:13px;');
   VIEW.weekStart = getWeekStart(new Date());
   try{
     const savedWeek = localStorage.getItem(WEEK_PREF_KEY);
