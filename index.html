@@ -2673,21 +2673,29 @@ function renderCard(b){
     saveState(); render();
   }});
   driverSel.appendChild(el('option',{value:''}, '\u2014 No driver \u2014'));
-  STATE.drivers.slice().sort(function(a,b2){ return a.name.localeCompare(b2.name); }).forEach(function(d){
-    if(d.name!==b.driverName){
+  if(b.driverName){
+    driverSel.appendChild(el('option',{value:b.driverName, selected:'selected'}, b.driverName));
+  }
+  // The full candidate list (checking every driver's conflicts/HOS/time-off against this
+  // block) is real work multiplied across every block on the board. Most of these dropdowns
+  // are never actually opened in a given visit, so build the rest of the list lazily, right
+  // when the person interacts with this specific one, instead of eagerly on every render.
+  let driverOptionsPopulated = false;
+  function populateDriverOptions(){
+    if(driverOptionsPopulated) return;
+    driverOptionsPopulated = true;
+    STATE.drivers.slice().sort(function(a,b2){ return a.name.localeCompare(b2.name); }).forEach(function(d){
+      if(d.name===b.driverName) return; // already present
       if(d.active===false) return;
       if(driverOnTimeOff(d, b.date)) return;
       const test = Object.assign({}, b, {driverName: d.name});
       if(checkDriverConflict(d.name, test)) return;
       if(driverHOSViolation(d.name, test)) return;
-    }
-    const opt = el('option',{value:d.name}, d.name);
-    if(d.name===b.driverName) opt.setAttribute('selected','selected');
-    driverSel.appendChild(opt);
-  });
-  if(b.driverName && !STATE.drivers.find(function(d){ return d.name===b.driverName; })){
-    driverSel.appendChild(el('option',{value:b.driverName, selected:'selected'}, b.driverName));
+      driverSel.appendChild(el('option',{value:d.name}, d.name));
+    });
   }
+  driverSel.addEventListener('mousedown', populateDriverOptions);
+  driverSel.addEventListener('focus', populateDriverOptions);
   card.appendChild(driverSel);
   card.appendChild(el('div',{class:'blockid mono'}, b.blockId || '\u2014'));
 
@@ -2714,21 +2722,31 @@ function renderCard(b){
     }
   });
   truckSel.appendChild(el('option',{value:''}, '\u2014 Select truck \u2014'));
-  const activeTrucks = STATE.trucks.filter(function(t){
-    if(t.id===b.truckId) return true; // always show the currently assigned truck, even if down/grounded/busy, so it stays visible/reassignable
-    if(t.status!=='active') return false;
-    // Solo 5-dedicated trucks (Sleeper + "Solo 5" checked) never show up as an option for
-    // anything but a Solo 5 block, even for manual selection.
-    if(t.vehicleType==='sleeper' && t.canDoSolo5 && b.type!=='solo5') return false;
-    return truckIsFreeFor(t.id, b);
-  }).sort(function(a,c){ return a.number.localeCompare(c.number, undefined, {numeric:true}); });
-  activeTrucks.forEach(function(t){
-    const typeLabel = TRUCK_TYPES.find(function(tt){ return tt.value===(t.vehicleType||'daycab'); });
-    const label = (t.status==='down' ? ' (Down)' : (t.status==='grounded' ? ' (Grounded)' : '')) + ' \u00b7 ' + (typeLabel?typeLabel.label:'');
-    const opt = el('option',{value:t.id}, t.number + label);
-    if(t.id===b.truckId) opt.setAttribute('selected','selected');
-    truckSel.appendChild(opt);
-  });
+  if(assignedTruck){
+    const typeLabel0 = TRUCK_TYPES.find(function(tt){ return tt.value===(assignedTruck.vehicleType||'daycab'); });
+    const label0 = (assignedTruck.status==='down' ? ' (Down)' : (assignedTruck.status==='grounded' ? ' (Grounded)' : '')) + ' \u00b7 ' + (typeLabel0?typeLabel0.label:'');
+    truckSel.appendChild(el('option',{value:assignedTruck.id, selected:'selected'}, assignedTruck.number + label0));
+  }
+  let truckOptionsPopulated = false;
+  function populateTruckOptions(){
+    if(truckOptionsPopulated) return;
+    truckOptionsPopulated = true;
+    const activeTrucks = STATE.trucks.filter(function(t){
+      if(t.id===b.truckId) return false; // already present
+      if(t.status!=='active') return false;
+      // Solo 5-dedicated trucks (Sleeper + "Solo 5" checked) never show up as an option for
+      // anything but a Solo 5 block, even for manual selection.
+      if(t.vehicleType==='sleeper' && t.canDoSolo5 && b.type!=='solo5') return false;
+      return truckIsFreeFor(t.id, b);
+    }).sort(function(a,c){ return a.number.localeCompare(c.number, undefined, {numeric:true}); });
+    activeTrucks.forEach(function(t){
+      const typeLabel = TRUCK_TYPES.find(function(tt){ return tt.value===(t.vehicleType||'daycab'); });
+      const label = (t.status==='down' ? ' (Down)' : (t.status==='grounded' ? ' (Grounded)' : '')) + ' \u00b7 ' + (typeLabel?typeLabel.label:'');
+      truckSel.appendChild(el('option',{value:t.id}, t.number + label));
+    });
+  }
+  truckSel.addEventListener('mousedown', populateTruckOptions);
+  truckSel.addEventListener('focus', populateTruckOptions);
   card.appendChild(truckSel);
 
   if(truckConflict){
@@ -3533,7 +3551,7 @@ document.addEventListener('keydown', function(e){
 });
 
 (async function init(){
-  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-users-panel', 'color:#e8a33d; font-weight:bold; font-size:13px;');
+  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-lazy-dropdowns', 'color:#e8a33d; font-weight:bold; font-size:13px;');
   VIEW.weekStart = getWeekStart(new Date());
   try{
     const savedWeek = localStorage.getItem(WEEK_PREF_KEY);
