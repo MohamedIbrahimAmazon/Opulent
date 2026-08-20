@@ -257,6 +257,8 @@
     font-family:'Oswald',sans-serif; font-size:10.5px; letter-spacing:0.06em; text-transform:uppercase;
     color:var(--text-faint); padding:6px 2px 2px; border-bottom:1px solid var(--line-soft); margin-bottom:2px;
   }
+  .type-divider{ height:1px; background:var(--line); margin:10px 0; }
+  .rejected-group-label{ color:var(--red); opacity:0.75; }
   .add-block-btn{
     border:1px dashed var(--line); background:transparent; color:var(--text-faint);
     border-radius:8px; padding:7px; font-size:11px; cursor:pointer; width:100%;
@@ -2534,17 +2536,21 @@ function renderBoard(){
     if(dayBlocks.length===0){
       body.appendChild(el('div',{class:'day-empty'}, (VIEW.searchQuery.trim()||VIEW.truckTypeFilter!=='all') ? 'No matches' : 'No blocks'));
     } else {
-      BLOCK_TYPES.forEach(function(bt){
-        const group = dayBlocks.filter(function(b){ return b.type===bt.value; })
-          .sort(function(a,b){
-            if(!!a.rejected !== !!b.rejected) return a.rejected ? 1 : -1;
-            return timeToMinutes(a.anchorTime)-timeToMinutes(b.anchorTime);
-          });
+      BLOCK_TYPES.forEach(function(bt, idx){
+        const group = dayBlocks.filter(function(b){ return b.type===bt.value && !b.rejected; })
+          .sort(function(a,b){ return timeToMinutes(a.anchorTime)-timeToMinutes(b.anchorTime); });
         if(group.length===0) return;
-        const activeInGroup = group.filter(function(b){ return !b.rejected; }).length;
-        body.appendChild(el('div',{class:'type-group-label'}, bt.label+' \u00b7 '+activeInGroup+(group.length!==activeInGroup ? (' ('+(group.length-activeInGroup)+' rejected)') : '')));
+        if(idx>0 && body.children.length>0) body.appendChild(el('div',{class:'type-divider'}));
+        body.appendChild(el('div',{class:'type-group-label'}, bt.label+' \u00b7 '+group.length));
         group.forEach(function(b){ body.appendChild(renderCard(b)); });
       });
+      const rejectedGroup = dayBlocks.filter(function(b){ return b.rejected; })
+        .sort(function(a,b){ return timeToMinutes(a.anchorTime)-timeToMinutes(b.anchorTime); });
+      if(rejectedGroup.length>0){
+        if(body.children.length>0) body.appendChild(el('div',{class:'type-divider'}));
+        body.appendChild(el('div',{class:'type-group-label rejected-group-label'}, '\u2716 Rejected \u00b7 '+rejectedGroup.length));
+        rejectedGroup.forEach(function(b){ body.appendChild(renderCard(b)); });
+      }
     }
     if(!isSearching) body.appendChild(el('button',{class:'add-block-btn', onclick:function(){ addManualBlock(i, iso); }}, '+ Add manual block'));
     col.appendChild(body);
@@ -2747,7 +2753,7 @@ function renderCard(b){
   }
   truckSel.addEventListener('mousedown', populateTruckOptions);
   truckSel.addEventListener('focus', populateTruckOptions);
-  card.appendChild(truckSel);
+  if(!b.rejected) card.appendChild(truckSel);
 
   if(truckConflict){
     card.appendChild(el('div',{class:'conflictmsg'}, '\u26a0 Truck conflict with block '+(truckConflict.blockId||'')+' \u2014 '+(truckConflict.driverName||'')+' ('+truckConflict.anchorTime+')'));
@@ -3551,7 +3557,7 @@ document.addEventListener('keydown', function(e){
 });
 
 (async function init(){
-  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-lazy-dropdowns', 'color:#e8a33d; font-weight:bold; font-size:13px;');
+  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-rejected-section', 'color:#e8a33d; font-weight:bold; font-size:13px;');
   VIEW.weekStart = getWeekStart(new Date());
   try{
     const savedWeek = localStorage.getItem(WEEK_PREF_KEY);
