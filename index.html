@@ -1893,7 +1893,15 @@ function assignDriversAutomatically(){
       // Sleeper gets priority on Solo 2 blocks (keeps them with their own equipment) --
       // Solo 1 is only ever a secondary/fallback fit for them since a Sleeper can't run it
       // anyway, so they'd need a different truck for that regardless.
+      // Fair distribution: whoever has the FEWEST trips already assigned this week (live
+      // count, updated as this loop goes) gets picked first. This is checked before every
+      // other tie-break, so trips fan out across everyone before anyone gets a 4th, 5th, etc.
+      // Sleeper/Solo 2 preference and "fewest work days" only matter among drivers who are
+      // otherwise tied on trip count.
       matches.sort(function(a,c){
+        const aCount = driverWeeklyTripCount(a.name);
+        const cCount = driverWeeklyTripCount(c.name);
+        if(aCount !== cCount) return aCount - cCount;
         if(b.type==='solo2'){
           const aSleeperPref = a.preferredTruckId && (function(){ const t=STATE.trucks.find(function(x){return x.id===a.preferredTruckId;}); return t && t.vehicleType==='sleeper'; })();
           const cSleeperPref = c.preferredTruckId && (function(){ const t=STATE.trucks.find(function(x){return x.id===c.preferredTruckId;}); return t && t.vehicleType==='sleeper'; })();
@@ -3557,7 +3565,7 @@ document.addEventListener('keydown', function(e){
 });
 
 (async function init(){
-  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-rejected-section', 'color:#e8a33d; font-weight:bold; font-size:13px;');
+  console.log('%cTruck Assignment Board \u2014 build 2026-08-01-fair-distribution', 'color:#e8a33d; font-weight:bold; font-size:13px;');
   VIEW.weekStart = getWeekStart(new Date());
   try{
     const savedWeek = localStorage.getItem(WEEK_PREF_KEY);
