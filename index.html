@@ -61,7 +61,8 @@
     transition: background .15s, color .15s;
   }
   .mono{ font-family:'JetBrains Mono', monospace; }
-  .disp{ font-family:'Oswald', sans-serif; text-transform:uppercase; letter-spacing:0.03em; }
+  .disp{ font-family:'Oswald', sans-serif; text-transform:uppercase; letter-spacing:0.03em;
+       }
 
   ::-webkit-scrollbar{ height:10px; width:10px; }
   ::-webkit-scrollbar-thumb{ background:var(--line); border-radius:6px; }
@@ -863,7 +864,28 @@ async function performSave(opts){
   }
 }
 
-function subscribeRealtime(){
+// ====== STALE-TAB PROTECTION ======
+// If this tab/device sits in the background (another tab, phone locked, minimized...) for
+// more than a minute, it's holding an outdated copy of the board in memory. If it then
+// makes ANY save while stale, it would overwrite everyone else's newer changes -- that's
+// what causes edits from another session to silently "revert". So the moment this tab
+// becomes visible again after being hidden a while, refetch the real shared board first,
+// before anything else can touch it.
+let _lastHiddenAt = null;
+const STALE_TAB_THRESHOLD_MS = 60 * 1000; // 1 minute
+document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState === 'hidden'){
+    _lastHiddenAt = Date.now();
+  } else if(document.visibilityState === 'visible'){
+    const wasHiddenLongEnough = _lastHiddenAt && (Date.now() - _lastHiddenAt) > STALE_TAB_THRESHOLD_MS;
+    _lastHiddenAt = null;
+    if(wasHiddenLongEnough && sb && currentUser && !isBoardLoading){
+      loadState().then(function(){ render(); });
+    }
+  }
+});
+// ====== END STALE-TAB PROTECTION ======
+  function subscribeRealtime(){
   if(!sb) return;
   sb.channel('board_state_changes')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'board_state', filter: 'id=eq.' + BOARD_ROW_ID }, function(payload){
