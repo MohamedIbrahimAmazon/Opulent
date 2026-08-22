@@ -801,7 +801,34 @@ function saveState(opts){
 // lastKnownUpdatedAt, occasionally leaving it out of sync with what's actually in the
 // database and tripping a false "someone else made changes" warning on the next save.
 // Serializing saves (never more than one in flight) removes that race entirely.
+function mergeStateOnConflict(incoming, local){
+  function mergeArrayById(incomingArr, localArr){
+    incomingArr = Array.isArray(incomingArr) ? incomingArr : [];
+    localArr = Array.isArray(localArr) ? localArr : [];
+    const map = {};
+    const order = [];
+    incomingArr.forEach(function(item){
+      if(item && item.id){ map[item.id] = item; order.push(item.id); }
+    });
+    localArr.forEach(function(item){
+      if(item && item.id){
+        if(!(item.id in map)) order.push(item.id);
+        map[item.id] = item;
+      }
+    });
+    return order.map(function(id){ return map[id]; });
+  }
+  const merged = Object.assign({}, incoming || {}, local || {});
+  merged.trucks = mergeArrayById(incoming && incoming.trucks, local && local.trucks);
+  merged.drivers = mergeArrayById(incoming && incoming.drivers, local && local.drivers);
+  merged.blocks = mergeArrayById(incoming && incoming.blocks, local && local.blocks);
+  merged.userDirectory = Object.assign({}, (incoming && incoming.userDirectory) || {}, (local && local.userDirectory) || {});
+  merged.theme = (local && local.theme) || (incoming && incoming.theme) || 'dark';
+  return merged;
+}
+
 async function performSave(opts){
+  opts = opts || {};
   if(saveInFlight){
     saveQueuedWhileInFlight = true;
     return;
@@ -810,22 +837,28 @@ async function performSave(opts){
   try{
     if(sb){
       try{
-        // Optimistic-concurrency check: lastKnownUpdatedAt is kept in sync by the realtime
-        // subscription every time ANY save (ours or someone else's) comes through. If the DB
-        // has a timestamp we don't recognize, our realtime hasn't caught up yet -- almost
-        // always just normal network lag of a second or so, not a real collision. Rather than
-        // interrupting the user with a reload prompt (which was firing often enough to be
-        // disruptive during normal fast-paced data entry), adopt the fresh timestamp and save
-        // right on top of it: our local STATE already carries the edit the user just made, and
-        // it's extremely unlikely two people are editing the exact same field at the exact
-        // same instant. This is logged to the console so a genuine rare collision is still
-        // traceable after the fact, without blocking anyone's work over it.
         if(!opts.force){
           const { data: current, error: checkErr } = await sb.from('board_state').select('updated_at, updated_by').eq('id', BOARD_ROW_ID).maybeSingle();
           const currentAt = current ? (current.updated_at || null) : null;
           const isStale = !!(currentAt && lastKnownUpdatedAt && currentAt !== lastKnownUpdatedAt);
           if(!checkErr && isStale){
-            console.warn('Board was saved by '+(current.updated_by||'someone')+' since our last known version -- saving on top rather than blocking.');
+            console.warn('Board was saved by '+(current.updated_by||'someone')+' since our last known version -- merging instead of overwriting.');
+            try{
+              const { data: fullRow, error: fetchErr } = await sb.from('board_state').select('data').eq('id', BOARD_ROW_ID).maybeSingle();
+              if(!fetchErr && fullRow && fullRow.data){
+                STATE = mergeStateOnConflict(fullRow.data, STATE);
+                if(!STATE.trucks) STATE.trucks=[];
+                if(!STATE.userDirectory) STATE.userDirectory={};
+                if(!STATE.drivers) STATE.drivers=[];
+                if(!STATE.blocks) STATE.blocks=[];
+                if(!STATE.theme) STATE.theme='dark';
+                render();
+              } else if(fetchErr){
+                console.error('Could not fetch full board for merge -- saving local version as-is.', fetchErr);
+              }
+            }catch(mergeErr){
+              console.error('Merge failed -- saving local version as-is.', mergeErr);
+            }
             lastKnownUpdatedAt = currentAt;
             lastKnownUpdatedBy = current.updated_by || lastKnownUpdatedBy;
           }
@@ -837,13 +870,11 @@ async function performSave(opts){
         if(error) throw error;
         lastKnownUpdatedAt = nowIso;
         lastKnownUpdatedBy = myEmail;
-        // Best-effort snapshot for the version history / safety net. Never blocks the main save.
         maybeSnapshot();
       }catch(e){
         console.error('Supabase save failed.', e);
         showToast('Could not save to shared board — check console / Supabase config');
       }finally{
-        // small delay so our own realtime echo (if any) doesn't bounce the UI
         setTimeout(function(){ suppressRealtime = false; }, 400);
       }
     } else {
@@ -851,15 +882,13 @@ async function performSave(opts){
         await window.storage.set(STORE_KEY, JSON.stringify(STATE), false);
       }
       catch(e){
-        /* Auto-save isn't available in this environment (e.g. running as a local file,
-           or an unpublished artifact). Fails silently — use Export/Import to back up. */
       }
     }
   } finally {
     saveInFlight = false;
     if(saveQueuedWhileInFlight){
       saveQueuedWhileInFlight = false;
-      performSave({}); // picks up STATE as it stands now, including everything queued in the meantime
+      performSave({});
     }
   }
 }
