@@ -234,11 +234,12 @@
     gap:10px;
     align-items:start;
   }
-  .day-col{ background:var(--bg-panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; min-height:120px; }
+  .day-col{ background:var(--bg-panel); border:1px solid var(--line); border-radius:12px; min-height:120px; }
   .day-head{
     padding:10px 12px; border-bottom:1px solid var(--line);
     background:var(--bg-card);
-    position:sticky; top:0;
+    position:sticky; top:0; z-index:2;
+    border-radius:12px 12px 0 0;
   }
   .day-head .dname{ font-family:'Oswald',sans-serif; font-size:12.5px; letter-spacing:0.05em; color:var(--text-dim); }
   .day-head .ddate{ font-size:15px; font-weight:600; margin-top:1px; }
@@ -909,7 +910,14 @@ document.addEventListener('visibilitychange', function(){
     const wasHiddenLongEnough = _lastHiddenAt && (Date.now() - _lastHiddenAt) > STALE_TAB_THRESHOLD_MS;
     _lastHiddenAt = null;
     if(wasHiddenLongEnough && sb && currentUser && !isBoardLoading){
-      loadState().then(function(){ render(); });
+      // Background tabs can have their timers throttled by the browser, so a debounced
+      // save queued right before switching away (e.g. right after a CSV import) may not
+      // have actually reached the server yet. Force that save through FIRST -- before
+      // refetching -- so the refresh below can never discard it.
+      clearTimeout(saveTimer);
+      performSave({force:true}).then(function(){
+        return loadState();
+      }).then(function(){ render(); });
     }
   }
 });
@@ -1810,6 +1818,7 @@ function renderHeader(){
     VIEW.mode==='board' ? upload : null,
     VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill drivers on this week\u2019s unassigned blocks, using each driver\u2019s schedule', onclick:function(){ assignDriversAutomatically(); }}, '\ud83e\udd16 Assign Drivers') : null,
     VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill trucks for blocks that have a driver but no truck yet', onclick:function(){ assignTrucksAutomatically(); }}, '\ud83d\ude9a Assign Trucks') : null,
+    VIEW.mode==='board' ? el('button',{class:'btn', title:'Clear EVERY truck assignment this week (even blocks that already have one) and reassign them all fresh', onclick:function(){ reassignTrucksForce(); }}, '\ud83d\udd01 Reassign Trucks') : null,
     el('button',{class:'btn'+(VIEW.mode==='board'?' active-mode':''), onclick:function(){setMode('board');}}, '\ud83d\udcc5 Board'),
     el('button',{class:'btn'+(VIEW.mode==='timeline'?' active-mode':''), onclick:function(){setMode('timeline');}}, '\ud83d\udcca Timeline'),
     el('button',{class:'btn'+(VIEW.mode==='drivers'?' active-mode':''), onclick:function(){setMode('drivers');}}, '\ud83d\udc64 Drivers'),
@@ -2036,6 +2045,23 @@ function reassignBlocksOffTruck(truck){
 
   logAction('Truck '+truck.number+' \u2192 '+truck.status+': reassigned '+reassigned+' block(s), '+freed+' left needing a truck');
   showToast('Truck '+truck.number+' is now '+truck.status+' \u2014 '+reassigned+' block(s) moved to another truck'+(freed?(', '+freed+' still need one'):''));
+}
+
+// Manually-triggered "hard reset" for trucks: clears the truck on EVERY non-rejected block
+// in the currently viewed week -- including ones that already have a truck assigned -- then
+// re-runs the normal auto-assignment from scratch. Unlike "Assign Trucks" (which only ever
+// fills in blocks that have no truck yet), this is for when the whole week's truck layout
+// needs to be re-optimized from a clean slate (e.g. after several manual tweaks or truck
+// status changes have left the assignments messy).
+function reassignTrucksForce(){
+  const blocks = currentWeekBlocks().filter(function(b){ return !b.rejected; });
+  if(blocks.length===0){ showToast('No blocks to reassign this week'); return; }
+  if(!window.confirm('This clears every truck assignment on '+blocks.length+' block(s) in the currently viewed week \u2014 including blocks that already have a truck \u2014 and reassigns them all fresh. Continue?')) return;
+  blocks.forEach(function(b){ b.truckId = null; });
+  invalidateBlockIndexCache();
+  logAction('Force-reassigned trucks: cleared truck on all '+blocks.length+' block(s) this week and reran auto-assignment');
+  saveState();
+  assignTrucksAutomatically();
 }
 
 function assignTrucksAutomatically(){
