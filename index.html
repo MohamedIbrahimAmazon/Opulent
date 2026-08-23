@@ -1818,7 +1818,7 @@ function renderHeader(){
     VIEW.mode==='board' ? upload : null,
     VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill drivers on this week\u2019s unassigned blocks, using each driver\u2019s schedule', onclick:function(){ assignDriversAutomatically(); }}, '\ud83e\udd16 Assign Drivers') : null,
     VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill trucks for blocks that have a driver but no truck yet', onclick:function(){ assignTrucksAutomatically(); }}, '\ud83d\ude9a Assign Trucks') : null,
-    VIEW.mode==='board' ? el('button',{class:'btn', title:'Clear EVERY truck assignment this week (even blocks that already have one) and reassign them all fresh', onclick:function(){ reassignTrucksForce(); }}, '\ud83d\udd01 Reassign Trucks') : null,
+    (VIEW.mode==='board' && isAdmin()) ? el('button',{class:'btn', title:'Clear EVERY truck assignment this week (even blocks that already have one) and reassign them all fresh', onclick:function(){ reassignTrucksForce(); }}, '\ud83d\udd01 Reassign Trucks') : null,
     el('button',{class:'btn'+(VIEW.mode==='board'?' active-mode':''), onclick:function(){setMode('board');}}, '\ud83d\udcc5 Board'),
     el('button',{class:'btn'+(VIEW.mode==='timeline'?' active-mode':''), onclick:function(){setMode('timeline');}}, '\ud83d\udcca Timeline'),
     el('button',{class:'btn'+(VIEW.mode==='drivers'?' active-mode':''), onclick:function(){setMode('drivers');}}, '\ud83d\udc64 Drivers'),
