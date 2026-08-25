@@ -786,12 +786,14 @@ async function loadState(){
 }
 
 let saveTimer=null;
+let saveTimerPending=false; // true only while a debounced save is genuinely still waiting to fire
 let saveInFlight=false;
 let saveQueuedWhileInFlight=false;
 function saveState(opts){
   opts = opts || {};
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(function(){ performSave(opts); }, 150);
+  saveTimerPending = true;
+  saveTimer = setTimeout(function(){ saveTimerPending = false; performSave(opts); }, 150);
 }
 
 // The actual save. Kept separate from the debounce timer so it can also be re-invoked
@@ -901,6 +903,13 @@ async function performSave(opts){
 // what causes edits from another session to silently "revert". So the moment this tab
 // becomes visible again after being hidden a while, refetch the real shared board first,
 // before anything else can touch it.
+//
+// IMPORTANT: only flush a save here if one was genuinely still pending (saveTimerPending) --
+// e.g. an edit made right before switching away, whose debounced save got throttled by the
+// browser while backgrounded. If nothing was pending, this tab has nothing of its own to
+// push, so it must NOT save at all -- just refresh. And when something IS pending, flush it
+// through the normal (non-forced) performSave so the merge-on-conflict logic still applies,
+// rather than blindly overwriting whatever anyone else saved while this tab was away.
 let _lastHiddenAt = null;
 const STALE_TAB_THRESHOLD_MS = 60 * 1000; // 1 minute
 document.addEventListener('visibilitychange', function(){
@@ -910,12 +919,11 @@ document.addEventListener('visibilitychange', function(){
     const wasHiddenLongEnough = _lastHiddenAt && (Date.now() - _lastHiddenAt) > STALE_TAB_THRESHOLD_MS;
     _lastHiddenAt = null;
     if(wasHiddenLongEnough && sb && currentUser && !isBoardLoading){
-      // Background tabs can have their timers throttled by the browser, so a debounced
-      // save queued right before switching away (e.g. right after a CSV import) may not
-      // have actually reached the server yet. Force that save through FIRST -- before
-      // refetching -- so the refresh below can never discard it.
+      const hadPendingEdit = saveTimerPending;
       clearTimeout(saveTimer);
-      performSave({force:true}).then(function(){
+      saveTimerPending = false;
+      const flush = hadPendingEdit ? performSave({}) : Promise.resolve();
+      flush.then(function(){
         return loadState();
       }).then(function(){ render(); });
     }
