@@ -1931,6 +1931,7 @@ function reassignBlocksOffDriver(driver, fromISO, toISO){
   });
 
   logAction(driver.name+' marked off '+fromISO+(toISO!==fromISO?(' to '+toISO):'')+': reassigned '+reassigned+' block(s), '+freed+' left needing a driver');
+  saveState(); // don't rely on the caller to save these reassignments
   showToast(driver.name+' is off \u2014 '+reassigned+' block(s) moved to another driver'+(freed?(', '+freed+' still need one'):''));
 }
 function assignDriversAutomatically(){
@@ -2024,12 +2025,16 @@ function onTruckStatusChanged(truck, prevStatus, newStatus){
 }
 
 function reassignBlocksOffTruck(truck){
-  const todayISO = fmtISO(toDateOnly(new Date()));
+  // Only touch blocks whose trip HASN'T finished yet at the moment the truck goes down/
+  // grounded -- a trip that already completed on this truck earlier today keeps its record
+  // exactly as it happened. Uses blockEndDT (which respects a logged actual end time) rather
+  // than just comparing dates, so "today" doesn't wrongly catch an already-finished trip.
+  const now = new Date();
   const [rwStart, rwEnd] = weekWindow(getWeekStart(new Date()));
   const weekEndISO = fmtISO(new Date(rwEnd.getTime()-24*60*60000));
 
   const affected = STATE.blocks.filter(function(b){
-    return !b.rejected && b.truckId===truck.id && b.date>=todayISO && b.date<=weekEndISO;
+    return !b.rejected && b.truckId===truck.id && b.date<=weekEndISO && blockEndDT(b) > now;
   }).sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
 
   if(affected.length===0) return;
@@ -2046,13 +2051,22 @@ function reassignBlocksOffTruck(truck){
       if(times.length>0 && times.indexOf(b.anchorTime)===-1) return false;
       if(checkConflict(t2.id, Object.assign({}, b, {truckId: t2.id}))) return false;
       return true;
-    }).sort(function(a,c){ return a.number.localeCompare(c.number); });
+    }).sort(function(a,c){
+      // Backup/spare trucks with no fixed trip times are free to run anytime, so they take
+      // priority over trucks that DO have set times -- those are likely already dedicated to
+      // a schedule elsewhere in the day, so pulling them off it should be more of a last resort.
+      const aFlex = (!Array.isArray(a.tripTimes) || a.tripTimes.length===0) ? 0 : 1;
+      const cFlex = (!Array.isArray(c.tripTimes) || c.tripTimes.length===0) ? 0 : 1;
+      if(aFlex !== cFlex) return aFlex - cFlex;
+      return a.number.localeCompare(c.number, undefined, {numeric:true});
+    });
     if(candidates.length>0){ b.truckId = candidates[0].id; reassigned++; invalidateBlockIndexCache(); }
     else freed++;
   });
 
   logAction('Truck '+truck.number+' \u2192 '+truck.status+': reassigned '+reassigned+' block(s), '+freed+' left needing a truck');
   showToast('Truck '+truck.number+' is now '+truck.status+' \u2014 '+reassigned+' block(s) moved to another truck'+(freed?(', '+freed+' still need one'):''));
+  saveState(); // these truckId changes were never guaranteed to be saved by the caller
 }
 
 // Manually-triggered "hard reset" for trucks: clears the truck on EVERY non-rejected block
@@ -2122,7 +2136,14 @@ function assignTrucksAutomatically(){
 
     if(!chosen){
       const fallbackCandidates = STATE.trucks.filter(function(t){ return truckUsable(t, b); })
-        .sort(function(a,c){ return a.number.localeCompare(c.number); });
+        .sort(function(a,c){
+          // Backup/spare trucks with no fixed trip times take priority -- trucks that DO
+          // have set times are likely already dedicated to a schedule elsewhere in the day.
+          const aFlex = (!Array.isArray(a.tripTimes) || a.tripTimes.length===0) ? 0 : 1;
+          const cFlex = (!Array.isArray(c.tripTimes) || c.tripTimes.length===0) ? 0 : 1;
+          if(aFlex !== cFlex) return aFlex - cFlex;
+          return a.number.localeCompare(c.number, undefined, {numeric:true});
+        });
       if(fallbackCandidates.length>0){ chosen = fallbackCandidates[0]; usedFallback = true; }
     }
 
@@ -2146,9 +2167,12 @@ function assignTrucksAutomatically(){
     stillShort.forEach(function(b){
       const closestCandidates = STATE.trucks.filter(function(t){ return truckUsableIgnoringTime(t, b); })
         .sort(function(a,c){
+          const aFlex = (!Array.isArray(a.tripTimes) || a.tripTimes.length===0) ? 0 : 1;
+          const cFlex = (!Array.isArray(c.tripTimes) || c.tripTimes.length===0) ? 0 : 1;
+          if(aFlex !== cFlex) return aFlex - cFlex;
           const da = closestTimeDistance(a, b), dc = closestTimeDistance(c, b);
           if(da !== dc) return da - dc;
-          return a.number.localeCompare(c.number);
+          return a.number.localeCompare(c.number, undefined, {numeric:true});
         });
       if(closestCandidates.length>0){
         b.truckId = closestCandidates[0].id;
@@ -2170,9 +2194,12 @@ function assignTrucksAutomatically(){
   driverlessCandidates.forEach(function(b){
     const candidates2 = STATE.trucks.filter(function(t){ return truckUsableIgnoringTime(t, b); })
       .sort(function(a,c){
+        const aFlex = (!Array.isArray(a.tripTimes) || a.tripTimes.length===0) ? 0 : 1;
+        const cFlex = (!Array.isArray(c.tripTimes) || c.tripTimes.length===0) ? 0 : 1;
+        if(aFlex !== cFlex) return aFlex - cFlex;
         const da = closestTimeDistance(a, b), dc = closestTimeDistance(c, b);
         if(da !== dc) return da - dc;
-        return a.number.localeCompare(c.number);
+        return a.number.localeCompare(c.number, undefined, {numeric:true});
       });
     if(candidates2.length>0){
       b.truckId = candidates2[0].id;
