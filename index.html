@@ -2692,7 +2692,10 @@ function renderCard(b){
   const truckConflict = b.truckId ? checkConflict(b.truckId, b) : null;
   const driverConflict = b.driverName ? checkDriverConflict(b.driverName, b) : null;
   const assignedTruckForConflict = b.truckId ? STATE.trucks.find(function(t){ return t.id===b.truckId; }) : null;
-  const isDownForConflict = assignedTruckForConflict && assignedTruckForConflict.status==='down';
+  // A trip that already finished before its truck went Down isn't a live conflict -- it's a
+  // closed historical record, so it shouldn't get the urgent red "needs reassignment" styling.
+  const tripAlreadyEndedForConflict = blockEndDT(b) <= new Date();
+  const isDownForConflict = assignedTruckForConflict && assignedTruckForConflict.status==='down' && !tripAlreadyEndedForConflict;
   const hasConflict = (!b.rejected) && (truckConflict || driverConflict || isDownForConflict);
   const missingDriver = !b.rejected && !b.driverName;
   const missingTruck = !b.rejected && !b.truckId;
@@ -2828,7 +2831,9 @@ function renderCard(b){
   const assignedTruck = b.truckId ? STATE.trucks.find(function(t){ return t.id===b.truckId; }) : null;
   const isGroundedSel = assignedTruck && assignedTruck.status==='grounded';
   const isDownSel = assignedTruck && assignedTruck.status==='down';
-  const truckSel = el('select',{class:'truck'+(!b.truckId?' empty':'')+((truckConflict||isDownSel)?' conflictsel':(isGroundedSel?' groundedsel':'')),
+  const tripAlreadyEnded = tripAlreadyEndedForConflict;
+  const truckNeedsAction = (isDownSel || isGroundedSel) && !tripAlreadyEnded;
+  const truckSel = el('select',{class:'truck'+(!b.truckId?' empty':'')+((truckConflict||(isDownSel && truckNeedsAction))?' conflictsel':((isGroundedSel && truckNeedsAction)?' groundedsel':'')),
     onchange:function(e){
       const val = e.target.value || null;
       if(val){
@@ -2882,9 +2887,17 @@ function renderCard(b){
     card.appendChild(el('div',{class:'conflictmsg'}, '\u26a0 Driver conflict: also on block '+(driverConflict.blockId||'')+' ('+driverConflict.anchorTime+')'));
   }
   if(isDownSel){
-    card.appendChild(el('div',{class:'conflictmsg'}, '\u26d4 Truck '+assignedTruck.number+' is DOWN'+(assignedTruck.note?(' \u2014 '+assignedTruck.note):'')+' \u2014 reassign this block'));
+    if(tripAlreadyEnded){
+      card.appendChild(el('div',{class:'conflictmsg', style:'color:var(--text-faint)'}, '\u2139\ufe0f Completed on truck '+assignedTruck.number+' before it went down \u2014 nothing to reassign'));
+    } else {
+      card.appendChild(el('div',{class:'conflictmsg'}, '\u26d4 Truck '+assignedTruck.number+' is DOWN'+(assignedTruck.note?(' \u2014 '+assignedTruck.note):'')+' \u2014 reassign this block'));
+    }
   } else if(!truckConflict && isGroundedSel){
-    card.appendChild(el('div',{class:'conflictmsg', style:'color:var(--amber)'}, '\u26a0 Truck '+assignedTruck.number+' is grounded'+(assignedTruck.note?(' \u2014 '+assignedTruck.note):'')+' (still assignable)'));
+    if(tripAlreadyEnded){
+      card.appendChild(el('div',{class:'conflictmsg', style:'color:var(--text-faint)'}, '\u2139\ufe0f Completed on truck '+assignedTruck.number+' before it was grounded'));
+    } else {
+      card.appendChild(el('div',{class:'conflictmsg', style:'color:var(--amber)'}, '\u26a0 Truck '+assignedTruck.number+' is grounded'+(assignedTruck.note?(' \u2014 '+assignedTruck.note):'')+' (still assignable)'));
+    }
   }
 
   card.appendChild(actualEndSlot);
