@@ -457,7 +457,7 @@ let isBoardLoading = true; // true until the shared board_state has actually bee
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null, timelineSearchQuery:'', timelineSort:'name', showUsers:false, usersList:null, usersLoading:false };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null, timelineSearchQuery:'', timelineSort:'name', showUsers:false, usersList:null, usersLoading:false, truckActionModal:null };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 let currentUser = null; // { id, email } once signed in, else null
@@ -1258,6 +1258,7 @@ function renderInner(){
   if(VIEW.showUsers) app.appendChild(renderUsersModal());
   if(VIEW.showPdfOptions) app.appendChild(renderPdfOptionsModal());
   if(VIEW.calendarDayModal) app.appendChild(renderCalendarDayModal());
+  if(VIEW.truckActionModal) app.appendChild(renderTruckActionModal());
   ensureDatalist();
   maybeScrollToToday();
 }
@@ -1558,6 +1559,43 @@ function renderPdfOptionsModal(){
   return overlay;
 }
 
+// Lets the person choose whether "Assign Trucks" / "Reassign Trucks" should run against just
+// one day of the currently viewed week, or the whole week at once. Shared by both buttons --
+// VIEW.truckActionModal.action ('assign' or 'reassign') decides which function actually runs
+// once a day (or "Whole Week") is picked.
+function renderTruckActionModal(){
+  const action = VIEW.truckActionModal.action;
+  const isReassign = action==='reassign';
+  const title = isReassign ? '\ud83d\udd01 Reassign Trucks' : '\ud83d\ude9a Assign Trucks';
+  const close = function(){ VIEW.truckActionModal=null; render(); };
+  const run = function(dayIndex){
+    VIEW.truckActionModal = null;
+    if(isReassign) reassignTrucksForce(dayIndex);
+    else assignTrucksAutomatically(dayIndex);
+  };
+  const overlay = el('div',{class:'overlay', onclick:function(e){ if(e.target===overlay) close(); }});
+  const modal = el('div',{class:'modal'});
+  modal.appendChild(el('div',{class:'modal-head'},[
+    el('h2',{}, title),
+    el('button',{class:'x', onclick:close}, '\u2715')
+  ]));
+  const body = el('div',{class:'modal-body'});
+  body.appendChild(el('div',{style:'font-size:12.5px; color:var(--text-dim); margin-bottom:12px;'},
+    isReassign ? 'Clear and reassign trucks for\u2026' : 'Fill in missing trucks for\u2026'));
+  const dayList = el('div',{style:'display:flex; flex-direction:column; gap:6px;'});
+  for(let i=0;i<7;i++){
+    const date = addDays(VIEW.weekStart, i);
+    dayList.appendChild(el('button',{class:'btn', style:'justify-content:flex-start; width:100%;', onclick:function(){ run(i); }},
+      DAY_NAMES[i]+' \u00b7 '+fmtShort(date)));
+  }
+  body.appendChild(dayList);
+  body.appendChild(el('button',{class:'btn primary', style:'width:100%; margin-top:10px; justify-content:center;', onclick:function(){ run(null); }},
+    '\ud83d\udcc5 Whole Week ('+fmtWeekLabel(VIEW.weekStart)+')'));
+  modal.appendChild(body);
+  overlay.appendChild(modal);
+  return overlay;
+}
+
 function generateAssignmentPDF(fromISO, toISO, weekdaySet){
   const blocks = STATE.blocks.filter(function(b){
     if(b.rejected) return false;
@@ -1825,8 +1863,8 @@ function renderHeader(){
     VIEW.mode==='board' ? el('label',{class:'btn primary', for:'csvInput'}, '\u2b06 Upload Trips CSV') : null,
     VIEW.mode==='board' ? upload : null,
     VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill drivers on this week\u2019s unassigned blocks, using each driver\u2019s schedule', onclick:function(){ assignDriversAutomatically(); }}, '\ud83e\udd16 Assign Drivers') : null,
-    VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill trucks for blocks that have a driver but no truck yet', onclick:function(){ assignTrucksAutomatically(); }}, '\ud83d\ude9a Assign Trucks') : null,
-    (VIEW.mode==='board' && isAdmin()) ? el('button',{class:'btn', title:'Clear EVERY truck assignment this week (even blocks that already have one) and reassign them all fresh', onclick:function(){ reassignTrucksForce(); }}, '\ud83d\udd01 Reassign Trucks') : null,
+    VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill trucks for blocks that have a driver but no truck yet', onclick:function(){ VIEW.truckActionModal={action:'assign'}; render(); }}, '\ud83d\ude9a Assign Trucks') : null,
+    (VIEW.mode==='board' && isAdmin()) ? el('button',{class:'btn', title:'Clear truck assignments (even ones already set) and reassign them all fresh', onclick:function(){ VIEW.truckActionModal={action:'reassign'}; render(); }}, '\ud83d\udd01 Reassign Trucks') : null,
     el('button',{class:'btn'+(VIEW.mode==='board'?' active-mode':''), onclick:function(){setMode('board');}}, '\ud83d\udcc5 Board'),
     el('button',{class:'btn'+(VIEW.mode==='timeline'?' active-mode':''), onclick:function(){setMode('timeline');}}, '\ud83d\udcca Timeline'),
     el('button',{class:'btn'+(VIEW.mode==='drivers'?' active-mode':''), onclick:function(){setMode('drivers');}}, '\ud83d\udc64 Drivers'),
@@ -2070,26 +2108,33 @@ function reassignBlocksOffTruck(truck){
 }
 
 // Manually-triggered "hard reset" for trucks: clears the truck on EVERY non-rejected block
-// in the currently viewed week -- including ones that already have a truck assigned -- then
-// re-runs the normal auto-assignment from scratch. Unlike "Assign Trucks" (which only ever
-// fills in blocks that have no truck yet), this is for when the whole week's truck layout
-// needs to be re-optimized from a clean slate (e.g. after several manual tweaks or truck
-// status changes have left the assignments messy).
-function reassignTrucksForce(){
-  const blocks = currentWeekBlocks().filter(function(b){ return !b.rejected; });
-  if(blocks.length===0){ showToast('No blocks to reassign this week'); return; }
-  if(!window.confirm('This clears every truck assignment on '+blocks.length+' block(s) in the currently viewed week \u2014 including blocks that already have a truck \u2014 and reassigns them all fresh. Continue?')) return;
+// in the currently viewed week (or just one day of it, if dayIndex is given) -- including
+// ones that already have a truck assigned -- then re-runs the normal auto-assignment from
+// scratch. Unlike "Assign Trucks" (which only ever fills in blocks that have no truck yet),
+// this is for when the truck layout needs to be re-optimized from a clean slate (e.g. after
+// several manual tweaks or truck status changes have left the assignments messy).
+function reassignTrucksForce(dayIndex){
+  const scoped = dayIndex==null;
+  const blocks = currentWeekBlocks().filter(function(b){ return !b.rejected && (scoped || b.dayIndex===dayIndex); });
+  const scopeLabel = scoped ? 'the currently viewed week' : ('this '+DAY_NAMES[dayIndex]);
+  if(blocks.length===0){ showToast('No blocks to reassign for '+scopeLabel); return; }
+  if(!window.confirm('This clears every truck assignment on '+blocks.length+' block(s) in '+scopeLabel+' \u2014 including blocks that already have a truck \u2014 and reassigns them all fresh. Continue?')) return;
   blocks.forEach(function(b){ b.truckId = null; });
   invalidateBlockIndexCache();
-  logAction('Force-reassigned trucks: cleared truck on all '+blocks.length+' block(s) this week and reran auto-assignment');
+  logAction('Force-reassigned trucks: cleared truck on all '+blocks.length+' block(s) in '+scopeLabel+' and reran auto-assignment');
   saveState();
-  assignTrucksAutomatically();
+  assignTrucksAutomatically(dayIndex);
 }
 
-function assignTrucksAutomatically(){
+function assignTrucksAutomatically(dayIndex){
+  const scoped = dayIndex==null;
+  const scopeLabel = scoped ? 'this week' : ('this '+DAY_NAMES[dayIndex]);
+  function weekOrDayBlocks(){
+    return currentWeekBlocks().filter(function(b){ return scoped || b.dayIndex===dayIndex; });
+  }
   // Only fills trucks onto blocks that already have a driver assigned. Run "Assign Drivers"
   // first (or assign the driver manually) if a block still shows "Needs truck" after this.
-  const candidates = currentWeekBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
+  const candidates = weekOrDayBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
     .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
   let assignedPreferred=0, assignedFallback=0, assignedClosest=0, noneAvailable=0, noPreferredSet=0;
 
@@ -2162,7 +2207,7 @@ function assignTrucksAutomatically(){
   // only, never crossed, but picking whichever remaining truck's own schedule sits closest to
   // this block's time instead of leaving it empty.
   if(noneAvailable>0){
-    const stillShort = currentWeekBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
+    const stillShort = weekOrDayBlocks().filter(function(b){ return !b.rejected && b.driverName && !b.truckId; })
       .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
     stillShort.forEach(function(b){
       const closestCandidates = STATE.trucks.filter(function(t){ return truckUsableIgnoringTime(t, b); })
@@ -2189,7 +2234,7 @@ function assignTrucksAutomatically(){
   // closest-time fit) rather than leaving the truck slot empty just because no driver's been
   // picked yet.
   let assignedNoDriver = 0, noneAvailableNoDriver = 0;
-  const driverlessCandidates = currentWeekBlocks().filter(function(b){ return !b.rejected && !b.driverName && !b.truckId; })
+  const driverlessCandidates = weekOrDayBlocks().filter(function(b){ return !b.rejected && !b.driverName && !b.truckId; })
     .sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
   driverlessCandidates.forEach(function(b){
     const candidates2 = STATE.trucks.filter(function(t){ return truckUsableIgnoringTime(t, b); })
@@ -2212,8 +2257,8 @@ function assignTrucksAutomatically(){
 
   if(assignedPreferred+assignedFallback+assignedClosest+assignedNoDriver>0) saveState();
   const total = assignedPreferred+assignedFallback+assignedClosest+assignedNoDriver;
-  logAction('Auto-assigned trucks: '+total+' filled ('+assignedPreferred+' preferred, '+assignedFallback+' fallback, '+assignedClosest+' closest-time, '+assignedNoDriver+' driverless), '+noneAvailable+' none available (with driver), '+noneAvailableNoDriver+' none available (driverless)');
-  showToast('Assigned '+total+' truck(s)'
+  logAction('Auto-assigned trucks for '+scopeLabel+': '+total+' filled ('+assignedPreferred+' preferred, '+assignedFallback+' fallback, '+assignedClosest+' closest-time, '+assignedNoDriver+' driverless), '+noneAvailable+' none available (with driver), '+noneAvailableNoDriver+' none available (driverless)');
+  showToast('Assigned '+total+' truck(s) for '+scopeLabel
     +(assignedFallback ? (' \u2014 '+assignedFallback+' used a fallback truck (preferred was unavailable)') : '')
     +(assignedClosest ? (' \u2014 '+assignedClosest+' used the closest-available truck (exact time wasn\u2019t free)') : '')
     +(assignedNoDriver ? (' \u2014 '+assignedNoDriver+' filled on driverless blocks too') : '')
@@ -3670,6 +3715,7 @@ function closeAnyOpenModal(){
   if(VIEW.showUsers){ VIEW.showUsers=false; closed=true; }
   if(VIEW.showPdfOptions){ VIEW.showPdfOptions=false; closed=true; }
   if(VIEW.calendarDayModal){ VIEW.calendarDayModal=null; closed=true; }
+  if(VIEW.truckActionModal){ VIEW.truckActionModal=null; closed=true; }
   if(closed) render();
   return closed;
 }
