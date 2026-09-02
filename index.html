@@ -290,12 +290,15 @@
   .card .time{ font-family:'Oswald',sans-serif; font-size:16px; font-weight:600; color:var(--amber); letter-spacing:0.02em; }
   .card .endtime{ font-size:10px; color:var(--text-faint); margin-top:1px; font-family:'JetBrains Mono',monospace; }
   .actual-end-toggle{
-    background:none; border:none; padding:0; margin:6px 0 2px; display:block; cursor:pointer;
-    font-size:10px; color:var(--text-faint); text-decoration:underline; text-underline-offset:2px;
+    background:none; border:1px dashed var(--line); border-radius:6px; padding:3px 7px; margin:7px 0 2px; display:inline-block; cursor:pointer;
+    font-size:10px; color:var(--text-faint);
   }
-  .actual-end-toggle:hover{ color:var(--amber); }
-  .actual-end-block{ margin:6px 0 2px; }
-  .actual-end-tag{ font-size:9.5px; color:var(--text-faint); white-space:nowrap; margin-bottom:3px; }
+  .actual-end-toggle:hover{ color:var(--amber); border-color:var(--amber-dim); }
+  .actual-end-block{
+    margin:7px 0 2px; padding:6px 7px; border-radius:7px;
+    background: rgba(255,159,46,0.09); border:1px solid var(--amber-dim);
+  }
+  .actual-end-tag{ font-size:9.5px; color:var(--amber); font-weight:700; letter-spacing:0.03em; white-space:nowrap; margin-bottom:4px; }
   .actual-end-row{ display:flex; align-items:center; gap:3px; flex-wrap:nowrap; }
   .actual-end-date, .actual-end-time{
     color-scheme: dark; font-size:10px; padding:2px 3px; line-height:1.3;
@@ -548,14 +551,19 @@ function blockEndDT(b){
   }
   return blockNominalEndDT(b);
 }
+// This is the label shown right under the anchor time on the card -- it always reflects the
+// ORIGINAL SCHEDULED end (nominal duration), never the actual end, even once one is logged.
+// The actual end (if any) is shown separately elsewhere on the card so the two never blend
+// together or get mistaken for one another. Note: blockEndDT (used everywhere else -- rest
+// gaps, the 70h cap, Timeline, conflicts) still correctly prefers the actual end when set;
+// this function only controls this one scheduled-time readout.
 function fmtEndLabel(b){
-  const end = blockEndDT(b);
+  const end = blockNominalEndDT(b);
   const endISO = fmtISO(new Date(end.getFullYear(), end.getMonth(), end.getDate()));
   const hh = String(end.getHours()).padStart(2,'0');
   const mm = String(end.getMinutes()).padStart(2,'0');
   const time = hh+':'+mm;
-  const label = endISO===b.date ? ('Ends '+time) : ('Ends '+time+' \u00b7 '+fmtShort(end));
-  return b.actualEnd ? (label+' (actual)') : label;
+  return endISO===b.date ? ('Ends '+time) : ('Ends '+time+' \u00b7 '+fmtShort(end));
 }
 
 async function checkAuth(){
@@ -2820,6 +2828,7 @@ function renderCard(b){
     ]),
     typeBadge
   ]));
+  card.appendChild(actualEndSlot);
 
   const driverSel = el('select',{class:'driver-select'+(!b.driverName?' empty':'')+(driverConflict?' conflictsel':''), onchange:function(e){
     const val = e.target.value;
@@ -2947,8 +2956,6 @@ function renderCard(b){
       card.appendChild(el('div',{class:'conflictmsg', style:'color:var(--amber)'}, '\u26a0 Truck '+assignedTruck.number+' is grounded'+(assignedTruck.note?(' \u2014 '+assignedTruck.note):'')+' (still assignable)'));
     }
   }
-
-  card.appendChild(actualEndSlot);
 
   const noteInput = el('input',{class:'block-note', value: b.note||'', placeholder:'+ Add note\u2026',
     oninput: function(e){ b.note = e.target.value; },
