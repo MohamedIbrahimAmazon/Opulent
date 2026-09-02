@@ -1853,6 +1853,7 @@ function renderHeader(){
     el('button',{class:'today-btn', onclick:function(){setWeekStart(getWeekStart(new Date())); render();}}, 'This Week')
   ]);
   const upload = el('input',{type:'file', id:'csvInput', accept:'.csv', onchange:handleCsvFile});
+  const actualEndUpload = el('input',{type:'file', id:'actualEndInput', accept:'.csv', onchange:handleActualEndFile});
   const importInput = el('input',{type:'file', id:'importInput', accept:'.json', onchange:handleImportFile});
   const themeBtn = el('button',{class:'theme-toggle', title:'Toggle theme (this device only)', onclick:function(){
     localTheme = localTheme==='light' ? 'dark' : 'light';
@@ -1862,6 +1863,8 @@ function renderHeader(){
   const actions = el('div',{class:'actions'},[
     VIEW.mode==='board' ? el('label',{class:'btn primary', for:'csvInput'}, '\u2b06 Upload Trips CSV') : null,
     VIEW.mode==='board' ? upload : null,
+    VIEW.mode==='board' ? el('label',{class:'btn', for:'actualEndInput', title:'Upload a trip-legs export to auto-fill Actual End on completed blocks (only fills in blocks that don\u2019t already have one)'}, '\u23f1 Upload Actual End Times') : null,
+    VIEW.mode==='board' ? actualEndUpload : null,
     VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill drivers on this week\u2019s unassigned blocks, using each driver\u2019s schedule', onclick:function(){ assignDriversAutomatically(); }}, '\ud83e\udd16 Assign Drivers') : null,
     VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill trucks for blocks that have a driver but no truck yet', onclick:function(){ VIEW.truckActionModal={action:'assign'}; render(); }}, '\ud83d\ude9a Assign Trucks') : null,
     (VIEW.mode==='board' && isAdmin()) ? el('button',{class:'btn', title:'Clear truck assignments (even ones already set) and reassign them all fresh', onclick:function(){ VIEW.truckActionModal={action:'reassign'}; render(); }}, '\ud83d\udd01 Reassign Trucks') : null,
@@ -3604,6 +3607,82 @@ function handleCsvFile(e){
     }; });
     parsed.sort(function(a,b){ return (a.date+a.anchorTime).localeCompare(b.date+b.anchorTime); });
     VIEW.editingCsv = { parsed: parsed, fileName: file.name };
+    render();
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+// Reads an Amazon Relay-style trip-legs export (Block ID / Facility Sequence / Load Execution
+// Status / Stop 2 Actual Departure Date+Time), finds the leg that actually arrives back at the
+// yard (Facility Sequence ending "...->HOU41") with a genuinely completed status, and uses ITS
+// actual departure time as the block's real end time. Only fills in blocks whose Actual End is
+// still empty -- never overwrites one that's already set (by this upload or by hand), and never
+// touches driver/truck/note/rejected/anything else on the block.
+function handleActualEndFile(e){
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev){
+    let text = ev.target.result;
+    if(text.charCodeAt(0)===0xFEFF) text = text.slice(1);
+    const rows = parseCSV(text);
+    if(rows.length<2){ showToast('The file is empty or the format is wrong', true); return; }
+    const header = rows[0].map(function(h){ return h.trim(); });
+    const idx = function(name){ return header.findIndex(function(h){ return h.toLowerCase()===name.toLowerCase(); }); };
+    const iBlock = idx('Block ID');
+    const iFacility = idx('Facility Sequence');
+    const iStatus = idx('Load Execution Status');
+    const iDate = idx('Stop 2 Actual Departure Date');
+    const iTime = idx('Stop 2 Actual Departure Time');
+    if(iBlock===-1 || iFacility===-1 || iStatus===-1 || iDate===-1 || iTime===-1){
+      showToast('Required columns (Block ID / Facility Sequence / Load Execution Status / Stop 2 Actual Departure Date+Time) were not found in this file', true);
+      return;
+    }
+    // Group every leg row under its Block ID, in the order they appear in the file.
+    const groups = {};
+    for(let r=1;r<rows.length;r++){
+      const row = rows[r];
+      if(!row || row.length<2) continue;
+      const blockId = (row[iBlock]||'').trim();
+      if(!blockId) continue;
+      (groups[blockId] = groups[blockId] || []).push(row);
+    }
+    // For each block, the yard-return leg is the last row whose Facility Sequence ends at
+    // HOU41 AND whose Load Execution Status is genuinely "Completed" (a leg can say
+    // Trip Stage = Completed while actually being Cancelled with no real timestamps, so
+    // Load Execution Status is the one that reflects what really happened).
+    const actualEndByBlock = {};
+    Object.keys(groups).forEach(function(blockId){
+      const legs = groups[blockId];
+      const yardReturnLegs = legs.filter(function(row){
+        const seq = (row[iFacility]||'').trim();
+        const parts = seq.split('->');
+        const dest = (parts[parts.length-1]||'').trim();
+        const status = (row[iStatus]||'').trim().toLowerCase();
+        return dest==='HOU41' && status==='completed';
+      });
+      if(yardReturnLegs.length===0) return; // hasn't made it back to the yard yet -- skip
+      const lastLeg = yardReturnLegs[yardReturnLegs.length-1];
+      const dt = parseCsvDT((lastLeg[iDate]||'').trim()+' '+(lastLeg[iTime]||'').trim());
+      if(!dt) return;
+      actualEndByBlock[blockId] = fmtISO(toDateOnly(dt))+'T'+String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0');
+    });
+
+    let updated=0, alreadySet=0, notOnBoard=0;
+    const foundBlockIds = new Set();
+    STATE.blocks.forEach(function(b){
+      if(!b.blockId || !(b.blockId in actualEndByBlock)) return;
+      foundBlockIds.add(b.blockId);
+      if(b.actualEnd){ alreadySet++; return; }
+      b.actualEnd = actualEndByBlock[b.blockId];
+      updated++;
+    });
+    notOnBoard = Object.keys(actualEndByBlock).filter(function(id){ return !foundBlockIds.has(id); }).length;
+
+    if(updated>0) saveState();
+    logAction('Uploaded actual end times: '+updated+' block(s) filled in, '+alreadySet+' already had one (left untouched), '+notOnBoard+' block(s) in the file not found on the board');
+    showToast('Actual end times: '+updated+' filled in'+(alreadySet?(', '+alreadySet+' already set (untouched)'):'')+(notOnBoard?(', '+notOnBoard+' not found on the board'):''));
     render();
   };
   reader.readAsText(file);
