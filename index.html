@@ -108,6 +108,9 @@
   .danger-zone{ display:flex; align-items:center; padding-left:16px; margin-left:2px; border-left:1px solid var(--line); }
   .danger-zone .btn{ color:var(--red); border-color:rgba(255,90,90,0.35); }
   .danger-zone .btn:hover{ background:rgba(255,90,90,0.08); border-color:var(--red); }
+  .actual-end-zone{ display:flex; align-items:center; padding-left:16px; margin-left:2px; border-left:1px solid var(--line); }
+  .actual-end-zone .btn{ color:var(--amber); border-color:rgba(255,159,46,0.4); }
+  .actual-end-zone .btn:hover{ background:rgba(255,159,46,0.08); border-color:var(--amber); }
   .btn{
     display:inline-flex; align-items:center; gap:6px;
     background:var(--bg-card); border:1px solid var(--line); color:var(--text);
@@ -1871,8 +1874,6 @@ function renderHeader(){
   const actions = el('div',{class:'actions'},[
     VIEW.mode==='board' ? el('label',{class:'btn primary', for:'csvInput'}, '\u2b06 Upload Trips CSV') : null,
     VIEW.mode==='board' ? upload : null,
-    VIEW.mode==='board' ? el('label',{class:'btn', for:'actualEndInput', title:'Upload a trip-legs export to auto-fill Actual End on completed blocks (only fills in blocks that don\u2019t already have one)'}, '\u23f1 Upload Actual End Times') : null,
-    VIEW.mode==='board' ? actualEndUpload : null,
     VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill drivers on this week\u2019s unassigned blocks, using each driver\u2019s schedule', onclick:function(){ assignDriversAutomatically(); }}, '\ud83e\udd16 Assign Drivers') : null,
     VIEW.mode==='board' ? el('button',{class:'btn primary', title:'Auto-fill trucks for blocks that have a driver but no truck yet', onclick:function(){ VIEW.truckActionModal={action:'assign'}; render(); }}, '\ud83d\ude9a Assign Trucks') : null,
     (VIEW.mode==='board' && isAdmin()) ? el('button',{class:'btn', title:'Clear truck assignments (even ones already set) and reassign them all fresh', onclick:function(){ VIEW.truckActionModal={action:'reassign'}; render(); }}, '\ud83d\udd01 Reassign Trucks') : null,
@@ -1893,6 +1894,10 @@ function renderHeader(){
     renderUserBadge(),
     themeBtn
   ]);
+  const actualEndZone = (VIEW.mode==='board') ? el('div',{class:'actual-end-zone'},[
+    el('label',{class:'btn', for:'actualEndInput', title:'Upload a trip-legs export to auto-fill Actual End on completed blocks (only fills in blocks that don\u2019t already have one)'}, '\u23f1 Upload Actual End Times'),
+    actualEndUpload
+  ]) : null;
   const dangerZone = (isAdmin() && VIEW.mode==='board') ? el('div',{class:'danger-zone'},[
     el('button',{class:'btn', title:'Delete every block in the currently viewed week (trucks and drivers are untouched)', onclick:function(){ clearCurrentWeek(); }}, '\ud83e\uddf9 Clear This Week')
   ]) : null;
@@ -1905,7 +1910,7 @@ function renderHeader(){
       ])
     ]),
     nav,
-    el('div',{class:'actions-row'}, [actions, dangerZone])
+    el('div',{class:'actions-row'}, [actions, actualEndZone, dangerZone])
   ]);
 }
 
