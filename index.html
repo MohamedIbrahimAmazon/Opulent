@@ -1941,6 +1941,31 @@ function driverOnTimeOff(driver, dateIso){
   return Array.isArray(driver.timeOff) && driver.timeOff.indexOf(dateIso)!==-1;
 }
 
+// Every calendar day a block's SCHEDULED span touches, from its start date through its
+// nominal end date (Solo 2 spans ~2 days, Solo 5 spans ~5 days) -- uses the nominal/scheduled
+// end rather than any actual end, since this is used to decide who's ELIGIBLE to be assigned
+// before the trip has even happened, so there's no actual end to look at yet.
+function blockSpanDates(b){
+  const start = toDateOnly(blockStartDT(b));
+  const end = toDateOnly(blockNominalEndDT(b));
+  const dates = [];
+  let cur = start;
+  while(cur <= end){
+    dates.push(fmtISO(cur));
+    cur = addDays(cur, 1);
+  }
+  return dates;
+}
+
+// A driver can't be assigned to a block if ANY day the trip runs through -- not just its
+// start date -- falls on a day they're marked off. A Solo 2 or Solo 5 block starting on a
+// day the driver IS available still isn't assignable to them if it would run into a day
+// they're off, since the trip doesn't pause for their vacation partway through.
+function driverOnTimeOffDuringBlock(driver, b){
+  if(!Array.isArray(driver.timeOff) || driver.timeOff.length===0) return false;
+  return blockSpanDates(b).some(function(d){ return driver.timeOff.indexOf(d)!==-1; });
+}
+
 // Mirrors reassignBlocksOffTruck: when a driver is marked off for some date range, pull them
 // off any block they're already on within that range (today or later only -- past days are
 // left alone) and try to hand each freed block to another eligible driver automatically,
@@ -1970,7 +1995,7 @@ function reassignBlocksOffDriver(driver, fromISO, toISO){
       if(days.indexOf(b.dayIndex)===-1) return false;
       if(types.indexOf(b.type)===-1) return false;
       if(times.length>0 && times.indexOf(b.anchorTime)===-1) return false;
-      if(driverOnTimeOff(d2, b.date)) return false;
+      if(driverOnTimeOffDuringBlock(d2, b)) return false;
       if(checkDriverConflict(d2.name, Object.assign({}, b, {driverName: d2.name}))) return false;
       if(driverHOSViolation(d2.name, Object.assign({}, b, {driverName: d2.name}))) return false;
       return true;
@@ -2001,8 +2026,10 @@ function assignDriversAutomatically(){
       if(days.indexOf(b.dayIndex)===-1) return false;
       if(types.indexOf(b.type)===-1) return false;
       if(times.length>0 && times.indexOf(b.anchorTime)===-1) return false;
-      // Never on a day the driver marked as off (vacation/leave).
-      if(driverOnTimeOff(d, b.date)) return false;
+      // Never on a day the driver marked as off (vacation/leave) -- checks every day the
+      // trip's scheduled span touches, not just its start date (a Solo 2/5 block starting on
+      // an available day still isn't assignable if it would run into a day they're off).
+      if(driverOnTimeOffDuringBlock(d, b)) return false;
       // Must actually be free at this time (no overlapping block already on them).
       if(checkDriverConflict(d.name, Object.assign({}, b, {driverName: d.name}))) return false;
       // Must not break the 10h rest rule or the 70h/8-day rolling cycle cap (this already
@@ -2046,7 +2073,7 @@ function assignDriversAutomatically(){
         const types = Array.isArray(d.allowedTypes) ? d.allowedTypes : ['solo1','solo2','solo5'];
         return days.indexOf(b.dayIndex)!==-1 && types.indexOf(b.type)!==-1 && (times.length===0 || times.indexOf(b.anchorTime)!==-1);
       });
-      if(scheduleMatches.length>0 && scheduleMatches.every(function(d){ return driverOnTimeOff(d, b.date); })) onLeave++;
+      if(scheduleMatches.length>0 && scheduleMatches.every(function(d){ return driverOnTimeOffDuringBlock(d, b); })) onLeave++;
       else if(scheduleMatches.length>0) hosBlocked++;
       else noMatch++;
     }
@@ -2906,8 +2933,8 @@ function renderCard(b){
         return;
       }
       const valDriverObj = STATE.drivers.find(function(d){ return d.name===val; });
-      if(valDriverObj && driverOnTimeOff(valDriverObj, b.date)){
-        showToast('\ud83d\udeab '+val+' is marked off (vacation/leave) on '+b.date, true);
+      if(valDriverObj && driverOnTimeOffDuringBlock(valDriverObj, b)){
+        showToast('\ud83d\udeab '+val+' is marked off (vacation/leave) during this trip\u2019s dates', true);
         render();
         return;
       }
@@ -2938,7 +2965,7 @@ function renderCard(b){
     STATE.drivers.slice().sort(function(a,b2){ return a.name.localeCompare(b2.name); }).forEach(function(d){
       if(d.name===b.driverName) return; // already present
       if(d.active===false) return;
-      if(driverOnTimeOff(d, b.date)) return;
+      if(driverOnTimeOffDuringBlock(d, b)) return;
       const test = Object.assign({}, b, {driverName: d.name});
       if(checkDriverConflict(d.name, test)) return;
       if(driverHOSViolation(d.name, test)) return;
