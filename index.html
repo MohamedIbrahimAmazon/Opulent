@@ -2057,6 +2057,59 @@ function assignDriversAutomatically(){
   render();
 }
 
+// When a truck comes back Active after being Down/Grounded, this checks whether any driver
+// whose HOME truck (preferredTruckId) is this exact truck is currently booked -- for a trip
+// that hasn't started yet, any day this week -- on some other (substitute/backup) truck, or
+// on no truck at all. If so, swaps them back onto their own truck. Whatever truck they were
+// borrowing is freed up in the process; if THAT truck also has its own rightful owner waiting
+// on a substitute, this recurses to restore them too, chaining all the way back. A backup
+// truck that nobody specifically owns is simply left free (available for anyone/anything else,
+// same as it always was) -- restoreOwnersToTruck only ever routes a truck to a genuine owner.
+function restoreOwnersToTruck(truck, processedTruckIds){
+  processedTruckIds = processedTruckIds || new Set();
+  if(processedTruckIds.has(truck.id)) return 0;
+  processedTruckIds.add(truck.id);
+  if(truck.status!=='active') return 0;
+
+  const owners = STATE.drivers.filter(function(d){ return d.preferredTruckId===truck.id; });
+  if(owners.length===0) return 0;
+  const ownerNames = owners.map(function(d){ return d.name.trim().toLowerCase(); });
+
+  const now = new Date();
+  const [,rwEnd] = weekWindow(getWeekStart(new Date()));
+  const weekEndISO = fmtISO(new Date(rwEnd.getTime()-24*60*60000));
+  const times = Array.isArray(truck.tripTimes) ? truck.tripTimes : [];
+
+  const candidates = STATE.blocks.filter(function(b){
+    if(b.rejected) return false;
+    if(b.date>weekEndISO) return false;
+    if(blockStartDT(b) <= now) return false; // only trips that haven't started yet
+    if(!b.driverName) return false;
+    if(ownerNames.indexOf(b.driverName.trim().toLowerCase())===-1) return false;
+    if(b.truckId===truck.id) return false; // already on their own truck -- nothing to do
+    if(!truckCanRunType(truck, b.type)) return false;
+    if(times.length>0 && times.indexOf(b.anchorTime)===-1) return false;
+    return true;
+  }).sort(function(a,c){ return blockStartDT(a)-blockStartDT(c); });
+
+  let restored=0;
+  const freedTrucks = [];
+  candidates.forEach(function(b){
+    if(!truckIsFreeFor(truck.id, b)) return; // already claimed by an earlier swap in this same pass
+    const oldTruckId = b.truckId;
+    b.truckId = truck.id;
+    invalidateBlockIndexCache();
+    restored++;
+    if(oldTruckId){
+      const oldTruck = STATE.trucks.find(function(t){ return t.id===oldTruckId; });
+      if(oldTruck) freedTrucks.push(oldTruck);
+    }
+  });
+
+  freedTrucks.forEach(function(ft){ restored += restoreOwnersToTruck(ft, processedTruckIds); });
+  return restored;
+}
+
 // Fills the truck for any block that already has a driver but no truck yet. Tries the
 // driver's preferred truck first; if that's unavailable (down, conflicting, wrong type,
 // or outside its trip times), falls back to any other truck that's physically compatible
@@ -2065,8 +2118,9 @@ function assignDriversAutomatically(){
 // Called whenever a truck's status changes (single edit or bulk apply). If it just went
 // Down or Grounded, every block it's still on for the rest of THIS real-world week gets
 // freed up and, where possible, handed to another compatible active truck automatically.
-// If it just came back Active, run the normal truck auto-fill so it gets picked up again
-// for any driver-having-no-truck blocks under the current rules.
+// If it just came back Active, first give it back to its own driver(s) if they were
+// temporarily borrowing a substitute truck, then run the normal truck auto-fill so it also
+// gets picked up for any driver-having-no-truck blocks under the current rules.
 function onTruckStatusChanged(truck, prevStatus, newStatus){
   const becameUnusable = (newStatus==='down' || newStatus==='grounded') && prevStatus==='active';
   const becameActive = newStatus==='active' && (prevStatus==='down' || prevStatus==='grounded');
@@ -2074,6 +2128,12 @@ function onTruckStatusChanged(truck, prevStatus, newStatus){
   if(becameUnusable){
     reassignBlocksOffTruck(truck);
   } else if(becameActive){
+    const restored = restoreOwnersToTruck(truck);
+    if(restored>0){
+      saveState();
+      logAction('Truck '+truck.number+' back to active: restored '+restored+' block(s) to their regular driver/truck');
+      showToast('Truck '+truck.number+' is back \u2014 restored '+restored+' block(s) to their regular driver');
+    }
     assignTrucksAutomatically();
   }
 }
