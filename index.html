@@ -334,6 +334,47 @@
   .card select.driver-select:hover{ color:var(--amber); }
   .card select.driver-select.empty{ color:var(--text-faint); font-weight:500; }
   .card select.driver-select.conflictsel{ color:var(--red); }
+  .driver-field{ margin-top:6px; }
+  .driver-display{
+    width:100%; display:flex; align-items:center; justify-content:space-between; gap:6px;
+    background:transparent; border:none; color:var(--text);
+    font-size:13px; font-weight:600; font-family:inherit; padding:2px 0; cursor:pointer; text-align:left;
+  }
+  .driver-display:hover{ color:var(--amber); }
+  .driver-display.empty{ color:var(--text-faint); font-weight:500; }
+  .driver-display.conflictsel{ color:var(--red); }
+  .driver-display-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .driver-display-arrow{ font-size:9px; color:var(--text-faint); flex-shrink:0; }
+  .driver-picker{
+    margin-top:5px; background:var(--bg-panel); border:1px solid var(--amber-dim); border-radius:8px;
+    padding:7px; max-height:230px; overflow-y:auto; box-shadow:var(--shadow);
+  }
+  .driver-picker-search{
+    width:100%; background:var(--bg-card); border:1px solid var(--line); color:var(--text);
+    padding:5px 7px; border-radius:6px; font-size:11.5px; margin-bottom:6px;
+  }
+  .driver-picker-search:focus{ outline:none; border-color:var(--amber-dim); }
+  .driver-picker-list{ display:flex; flex-direction:column; gap:1px; }
+  .driver-picker-heading{ font-size:9.5px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; padding:6px 4px 3px; }
+  .driver-picker-heading.ok{ color:var(--green); }
+  .driver-picker-heading.warn{ color:var(--text-faint); }
+  .driver-picker-row{
+    padding:5px 6px; border-radius:5px; font-size:12px; cursor:pointer; color:var(--text);
+    white-space:normal; word-break:break-word; line-height:1.35;
+  }
+  .driver-picker-row:hover{ background:var(--bg-card-hover); }
+  .driver-picker-row.current{ color:var(--amber); font-weight:600; }
+  .driver-picker-row.driver-picker-none{ color:var(--text-faint); font-style:italic; }
+  .driver-picker-row.disabled{ cursor:default; opacity:0.7; }
+  .driver-picker-row.disabled:hover{ background:none; }
+  .driver-picker-row-name{ font-size:12px; color:var(--text-dim); }
+  .driver-picker-row-reason{ font-size:10px; color:var(--text-faint); margin-top:1px; white-space:normal; word-break:break-word; }
+  .driver-picker-empty{ padding:10px 4px; font-size:11.5px; color:var(--text-faint); text-align:center; }
+  .driver-picker-close{
+    width:100%; margin-top:6px; background:var(--bg-card); border:1px solid var(--line); color:var(--text-dim);
+    padding:5px; border-radius:6px; font-size:11px; cursor:pointer;
+  }
+  .driver-picker-close:hover{ color:var(--text); border-color:var(--amber-dim); }
   .card .blockid{ font-size:10px; color:var(--text-faint); margin-top:1px; }
   .card select.truck{
     margin-top:7px; width:100%; background:var(--bg-panel); color:var(--text); border:1px solid var(--line);
@@ -2836,6 +2877,120 @@ function renderBoard(){
   return board;
 }
 
+// Tracks which single block's driver-picker panel is currently expanded (only one at a time,
+// board-wide), and the search text typed into it. Plain module-level state rather than VIEW,
+// since it's transient UI state that shouldn't persist across page reloads or count as a
+// "view preference" -- it always starts closed on a fresh load.
+let openDriverPickerBlockId = null;
+let driverPickerSearch = '';
+
+// Splits every driver into "available" (fully eligible for this exact block right now) and
+// "unavailable" (with a specific, human-readable reason) -- this is the exact same set of
+// checks the old plain dropdown used to run silently before deciding whether to include a
+// driver as an option, just capturing WHY instead of throwing the reason away.
+function computeDriverEligibility(b){
+  const available = [];
+  const unavailable = [];
+  STATE.drivers.slice().sort(function(a,c){ return a.name.localeCompare(c.name); }).forEach(function(d){
+    if(d.name===b.driverName){ available.push(d); return; } // whoever's already on it is obviously assignable
+    if(d.active===false){ unavailable.push({driver:d, reason:'Inactive driver'}); return; }
+    if(driverOnTimeOffDuringBlock(d, b)){ unavailable.push({driver:d, reason:'On leave during this trip\u2019s dates'}); return; }
+    const test = Object.assign({}, b, {driverName: d.name});
+    const conflict = checkDriverConflict(d.name, test);
+    if(conflict){ unavailable.push({driver:d, reason:'Already on block '+(conflict.blockId||conflict.id)+' at '+conflict.anchorTime}); return; }
+    const hos = driverHOSViolation(d.name, test);
+    if(hos){ unavailable.push({driver:d, reason: hos.charAt(0).toUpperCase()+hos.slice(1)}); return; }
+    available.push(d);
+  });
+  return {available: available, unavailable: unavailable};
+}
+
+// The clickable "current driver" readout on the card, plus (when expanded) the picker panel
+// itself -- a searchable list split into Available / Not available, with the reason written
+// out in full next to each unavailable name so nothing gets cut off or hidden behind a hover.
+function renderDriverField(b, driverConflict){
+  const wrap = el('div',{class:'driver-field'});
+  const isOpen = openDriverPickerBlockId === b.id;
+  wrap.appendChild(el('button',{type:'button', class:'driver-display'+(!b.driverName?' empty':'')+(driverConflict?' conflictsel':''),
+    onclick:function(){
+      openDriverPickerBlockId = isOpen ? null : b.id;
+      driverPickerSearch = '';
+      render();
+    }
+  },[
+    el('span',{class:'driver-display-name'}, b.driverName || '\u2014 No driver \u2014'),
+    el('span',{class:'driver-display-arrow'}, isOpen ? '\u25b4' : '\u25be')
+  ]));
+  if(isOpen) wrap.appendChild(renderDriverPickerPanel(b));
+  return wrap;
+}
+
+function renderDriverPickerPanel(b){
+  const panel = el('div',{class:'driver-picker'});
+  panel.appendChild(el('input',{id:'driverPickerSearchInput', class:'driver-picker-search', placeholder:'\ud83d\udd0d Search driver\u2026', value: driverPickerSearch,
+    oninput:function(e){ driverPickerSearch = e.target.value; render(); }
+  }));
+
+  const selectDriver = function(name){
+    if(name){
+      const test = Object.assign({}, b, {driverName: name});
+      const c = checkDriverConflict(name, test);
+      if(c){
+        showToast('\ud83d\udeab '+name+' is already on block '+(c.blockId||'')+' ('+c.anchorTime+') \u2014 conflicting times', true);
+        return;
+      }
+      const d2 = STATE.drivers.find(function(x){ return x.name===name; });
+      if(d2 && driverOnTimeOffDuringBlock(d2, b)){
+        showToast('\ud83d\udeab '+name+' is marked off (vacation/leave) during this trip\u2019s dates', true);
+        return;
+      }
+      const hos = driverHOSViolation(name, test);
+      if(hos){
+        showToast('\ud83d\udeab '+name+' \u2014 '+hos, true);
+        return;
+      }
+    }
+    const prevDriver = b.driverName;
+    b.driverName = name;
+    logAction('Set driver on block '+(b.blockId||b.id)+' from "'+(prevDriver||'none')+'" to "'+(name||'none')+'"');
+    openDriverPickerBlockId = null;
+    saveState(); render();
+  };
+
+  const eligibility = computeDriverEligibility(b);
+  const q = driverPickerSearch.trim().toLowerCase();
+  const matchQ = function(name){ return !q || name.toLowerCase().indexOf(q)!==-1; };
+  const availFiltered = eligibility.available.filter(function(d){ return matchQ(d.name); });
+  const unavailFiltered = eligibility.unavailable.filter(function(u){ return matchQ(u.driver.name); });
+
+  const list = el('div',{class:'driver-picker-list'});
+  if(matchQ('no driver')){
+    list.appendChild(el('div',{class:'driver-picker-row driver-picker-none', onclick:function(){ selectDriver(''); }}, '\u2014 No driver \u2014'));
+  }
+  if(availFiltered.length>0){
+    list.appendChild(el('div',{class:'driver-picker-heading ok'}, '\u2705 Available'));
+    availFiltered.forEach(function(d){
+      list.appendChild(el('div',{class:'driver-picker-row'+(d.name===b.driverName?' current':''), onclick:function(){ selectDriver(d.name); }},
+        d.name + (d.name===b.driverName ? ' (current)' : '')));
+    });
+  }
+  if(unavailFiltered.length>0){
+    list.appendChild(el('div',{class:'driver-picker-heading warn'}, '\ud83d\udeab Not available'));
+    unavailFiltered.forEach(function(u){
+      list.appendChild(el('div',{class:'driver-picker-row disabled'},[
+        el('div',{class:'driver-picker-row-name'}, u.driver.name),
+        el('div',{class:'driver-picker-row-reason'}, u.reason)
+      ]));
+    });
+  }
+  if(availFiltered.length===0 && unavailFiltered.length===0){
+    list.appendChild(el('div',{class:'driver-picker-empty'}, 'No drivers match "'+driverPickerSearch+'"'));
+  }
+  panel.appendChild(list);
+  panel.appendChild(el('button',{type:'button', class:'driver-picker-close', onclick:function(){ openDriverPickerBlockId=null; render(); }}, 'Close'));
+  return panel;
+}
+
 function renderCard(b){
   const truckConflict = b.truckId ? checkConflict(b.truckId, b) : null;
   const driverConflict = b.driverName ? checkDriverConflict(b.driverName, b) : null;
@@ -2922,59 +3077,7 @@ function renderCard(b){
   ]));
   card.appendChild(actualEndSlot);
 
-  const driverSel = el('select',{class:'driver-select'+(!b.driverName?' empty':'')+(driverConflict?' conflictsel':''), onchange:function(e){
-    const val = e.target.value;
-    if(val){
-      const test = Object.assign({}, b, {driverName: val});
-      const c = checkDriverConflict(val, test);
-      if(c){
-        showToast('\ud83d\udeab '+val+' is already on block '+(c.blockId||'')+' ('+c.anchorTime+') \u2014 conflicting times', true);
-        render();
-        return;
-      }
-      const valDriverObj = STATE.drivers.find(function(d){ return d.name===val; });
-      if(valDriverObj && driverOnTimeOffDuringBlock(valDriverObj, b)){
-        showToast('\ud83d\udeab '+val+' is marked off (vacation/leave) during this trip\u2019s dates', true);
-        render();
-        return;
-      }
-      const hos = driverHOSViolation(val, test);
-      if(hos){
-        showToast('\ud83d\udeab '+val+' \u2014 '+hos, true);
-        render();
-        return;
-      }
-    }
-    const prevDriver = b.driverName;
-    b.driverName = val;
-    logAction('Set driver on block '+(b.blockId||b.id)+' from "'+(prevDriver||'none')+'" to "'+(val||'none')+'"');
-    saveState(); render();
-  }});
-  driverSel.appendChild(el('option',{value:''}, '\u2014 No driver \u2014'));
-  if(b.driverName){
-    driverSel.appendChild(el('option',{value:b.driverName, selected:'selected'}, b.driverName));
-  }
-  // The full candidate list (checking every driver's conflicts/HOS/time-off against this
-  // block) is real work multiplied across every block on the board. Most of these dropdowns
-  // are never actually opened in a given visit, so build the rest of the list lazily, right
-  // when the person interacts with this specific one, instead of eagerly on every render.
-  let driverOptionsPopulated = false;
-  function populateDriverOptions(){
-    if(driverOptionsPopulated) return;
-    driverOptionsPopulated = true;
-    STATE.drivers.slice().sort(function(a,b2){ return a.name.localeCompare(b2.name); }).forEach(function(d){
-      if(d.name===b.driverName) return; // already present
-      if(d.active===false) return;
-      if(driverOnTimeOffDuringBlock(d, b)) return;
-      const test = Object.assign({}, b, {driverName: d.name});
-      if(checkDriverConflict(d.name, test)) return;
-      if(driverHOSViolation(d.name, test)) return;
-      driverSel.appendChild(el('option',{value:d.name}, d.name));
-    });
-  }
-  driverSel.addEventListener('mousedown', populateDriverOptions);
-  driverSel.addEventListener('focus', populateDriverOptions);
-  card.appendChild(driverSel);
+  card.appendChild(renderDriverField(b, driverConflict));
   card.appendChild(el('div',{class:'blockid mono'}, b.blockId || '\u2014'));
 
   const assignedTruck = b.truckId ? STATE.trucks.find(function(t){ return t.id===b.truckId; }) : null;
@@ -3894,6 +3997,7 @@ function closeAnyOpenModal(){
   if(VIEW.showPdfOptions){ VIEW.showPdfOptions=false; closed=true; }
   if(VIEW.calendarDayModal){ VIEW.calendarDayModal=null; closed=true; }
   if(VIEW.truckActionModal){ VIEW.truckActionModal=null; closed=true; }
+  if(openDriverPickerBlockId){ openDriverPickerBlockId=null; closed=true; }
   if(closed) render();
   return closed;
 }
