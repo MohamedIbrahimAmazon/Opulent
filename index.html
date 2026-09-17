@@ -1984,13 +1984,30 @@ function driverOnTimeOff(driver, dateIso){
   return Array.isArray(driver.timeOff) && driver.timeOff.indexOf(dateIso)!==-1;
 }
 
-// Every calendar day a block's SCHEDULED span touches, from its start date through its
-// nominal end date (Solo 2 spans ~2 days, Solo 5 spans ~5 days) -- uses the nominal/scheduled
-// end rather than any actual end, since this is used to decide who's ELIGIBLE to be assigned
-// before the trip has even happened, so there's no actual end to look at yet.
+// How far into the first morning of a time-off day a trip may still be running without that
+// day counting as "worked". A trip that wraps up in the small hours (e.g. 01:00-03:00) hasn't
+// really eaten into the driver's day off, so it's allowed; anything still running past this
+// hour does count and blocks the assignment.
+const TIME_OFF_GRACE_END_HOUR = 3; // 03:00
+
+// Every calendar day a block's SCHEDULED span meaningfully occupies, from its start date
+// through its nominal end date (Solo 2 spans ~2 days, Solo 5 spans ~5 days). Uses the
+// nominal/scheduled end rather than any actual end, since this decides who's ELIGIBLE to be
+// assigned before the trip has even happened, so there's no actual end to look at yet.
+// The final day is left out when the trip finishes at or before TIME_OFF_GRACE_END_HOUR that
+// morning -- ending at 01:00 or 02:30 doesn't really consume that whole day.
 function blockSpanDates(b){
-  const start = toDateOnly(blockStartDT(b));
-  const end = toDateOnly(blockNominalEndDT(b));
+  const startDT = blockStartDT(b);
+  const endDT = blockNominalEndDT(b);
+  const start = toDateOnly(startDT);
+  let end = toDateOnly(endDT);
+  const endsInGraceWindow = (endDT.getHours() < TIME_OFF_GRACE_END_HOUR)
+    || (endDT.getHours() === TIME_OFF_GRACE_END_HOUR && endDT.getMinutes() === 0);
+  // Only trim the trailing day if the trip actually spans more than one day -- a same-day
+  // trip must always report at least its own start date.
+  if(endsInGraceWindow && end > start){
+    end = addDays(end, -1);
+  }
   const dates = [];
   let cur = start;
   while(cur <= end){
