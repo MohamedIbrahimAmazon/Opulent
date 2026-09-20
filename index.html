@@ -1988,7 +1988,7 @@ function driverOnTimeOff(driver, dateIso){
 // day counting as "worked". A trip that wraps up in the small hours (e.g. 01:00-03:00) hasn't
 // really eaten into the driver's day off, so it's allowed; anything still running past this
 // hour does count and blocks the assignment.
-const TIME_OFF_GRACE_END_HOUR = 3; // 03:00
+const TIME_OFF_GRACE_END_HOUR = 4; // 04:00
 
 // Every calendar day a block's SCHEDULED span meaningfully occupies, from its start date
 // through its nominal end date (Solo 2 spans ~2 days, Solo 5 spans ~5 days). Uses the
