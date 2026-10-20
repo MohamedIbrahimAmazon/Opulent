@@ -367,7 +367,16 @@
   .driver-picker-row.driver-picker-none{ color:var(--text-faint); font-style:italic; }
   .driver-picker-row.disabled{ cursor:default; opacity:0.7; transition: opacity .12s, background .12s; }
   .driver-picker-row.disabled:hover{ opacity:1; background:var(--bg-card); }
-  .driver-picker-row-name{ font-size:12px; color:var(--text-dim); transition: color .12s; }
+  .driver-picker-row-top{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .driver-picker-row-label{ min-width:0; word-break:break-word; }
+  .driver-types{ display:inline-flex; gap:3px; flex-shrink:0; }
+  .driver-type-badge{
+    font-size:9px; font-weight:700; line-height:1; padding:2px 4px; border-radius:4px;
+    background:var(--bg-card); color:var(--text-faint); border:1px solid var(--line);
+    font-family:'JetBrains Mono',monospace;
+  }
+  .driver-type-badge.match{ color:var(--amber); border-color:var(--amber-dim); background:rgba(255,159,46,0.12); }
+  .driver-picker-row-name{ font-size:12px; color:var(--text-dim); transition: color .12s; min-width:0; word-break:break-word; }
   .driver-picker-row-reason{ font-size:10px; color:var(--text-faint); margin-top:1px; white-space:normal; word-break:break-word; transition: color .12s; }
   .driver-picker-row.disabled:hover .driver-picker-row-name{ color:var(--text); }
   .driver-picker-row.disabled:hover .driver-picker-row-reason{ color:var(--amber); }
@@ -1988,7 +1997,7 @@ function driverOnTimeOff(driver, dateIso){
 // day counting as "worked". A trip that wraps up in the small hours (e.g. 01:00-03:00) hasn't
 // really eaten into the driver's day off, so it's allowed; anything still running past this
 // hour does count and blocks the assignment.
-const TIME_OFF_GRACE_END_HOUR = 4; // 04:00
+const TIME_OFF_GRACE_END_HOUR = 3; // 03:00
 
 // Every calendar day a block's SCHEDULED span meaningfully occupies, from its start date
 // through its nominal end date (Solo 2 spans ~2 days, Solo 5 spans ~5 days). Uses the
@@ -2944,6 +2953,23 @@ function renderDriverField(b, driverConflict){
   return wrap;
 }
 
+// Small "S1 S2 S5" tags showing which Solo types a driver is set up to run (their "Runs"
+// checkboxes on the Drivers page). The tag matching THIS block's type is highlighted so it's
+// obvious at a glance whether the driver normally does this kind of trip.
+function renderDriverTypeBadges(d, blockType){
+  const allowed = Array.isArray(d.allowedTypes) ? d.allowedTypes : ['solo1','solo2','solo5'];
+  const wrap = el('span',{class:'driver-types'});
+  const ordered = ['solo1','solo2','solo5'].filter(function(t){ return allowed.indexOf(t)!==-1; });
+  if(ordered.length===0){
+    wrap.appendChild(el('span',{class:'driver-type-badge'}, '\u2014'));
+    return wrap;
+  }
+  ordered.forEach(function(t){
+    wrap.appendChild(el('span',{class:'driver-type-badge'+(t===blockType?' match':'')}, t.replace('solo','S')));
+  });
+  return wrap;
+}
+
 function renderDriverPickerPanel(b){
   const panel = el('div',{class:'driver-picker'});
   panel.appendChild(el('input',{id:'driverPickerSearchInput', class:'driver-picker-search', placeholder:'\ud83d\udd0d Search driver\u2026', value: driverPickerSearch,
@@ -2990,14 +3016,20 @@ function renderDriverPickerPanel(b){
     list.appendChild(el('div',{class:'driver-picker-heading ok'}, '\u2705 Available'));
     availFiltered.forEach(function(d){
       list.appendChild(el('div',{class:'driver-picker-row'+(d.name===b.driverName?' current':''), onclick:function(){ selectDriver(d.name); }},
-        d.name + (d.name===b.driverName ? ' (current)' : '')));
+        el('div',{class:'driver-picker-row-top'},[
+          el('span',{class:'driver-picker-row-label'}, d.name + (d.name===b.driverName ? ' (current)' : '')),
+          renderDriverTypeBadges(d, b.type)
+        ])));
     });
   }
   if(unavailFiltered.length>0){
     list.appendChild(el('div',{class:'driver-picker-heading warn'}, '\ud83d\udeab Not available'));
     unavailFiltered.forEach(function(u){
       list.appendChild(el('div',{class:'driver-picker-row disabled'},[
-        el('div',{class:'driver-picker-row-name'}, u.driver.name),
+        el('div',{class:'driver-picker-row-top'},[
+          el('span',{class:'driver-picker-row-name'}, u.driver.name),
+          renderDriverTypeBadges(u.driver, b.type)
+        ]),
         el('div',{class:'driver-picker-row-reason'}, u.reason)
       ]));
     });
