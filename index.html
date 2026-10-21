@@ -1632,6 +1632,9 @@ function renderTruckActionModal(){
   const title = isReassign ? '\ud83d\udd01 Reassign Trucks' : '\ud83d\ude9a Assign Trucks';
   const close = function(){ VIEW.truckActionModal=null; render(); };
   const run = function(dayIndex){
+    // "Whole Week" (dayIndex null) is admin-only; the button is hidden for everyone else,
+    // and this guard makes sure it can't be triggered some other way either.
+    if(dayIndex==null && !isAdmin()){ showToast('Only the admin account can run this for the whole week', true); return; }
     VIEW.truckActionModal = null;
     if(isReassign) reassignTrucksForce(dayIndex);
     else assignTrucksAutomatically(dayIndex);
@@ -1652,8 +1655,10 @@ function renderTruckActionModal(){
       DAY_NAMES[i]+' \u00b7 '+fmtShort(date)));
   }
   body.appendChild(dayList);
-  body.appendChild(el('button',{class:'btn primary', style:'width:100%; margin-top:10px; justify-content:center;', onclick:function(){ run(null); }},
-    '\ud83d\udcc5 Whole Week ('+fmtWeekLabel(VIEW.weekStart)+')'));
+  if(isAdmin()){
+    body.appendChild(el('button',{class:'btn primary', style:'width:100%; margin-top:10px; justify-content:center;', onclick:function(){ run(null); }},
+      '\ud83d\udcc5 Whole Week ('+fmtWeekLabel(VIEW.weekStart)+')'));
+  }
   modal.appendChild(body);
   overlay.appendChild(modal);
   return overlay;
