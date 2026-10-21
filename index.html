@@ -515,7 +515,7 @@ let isBoardLoading = true; // true until the shared board_state has actually bee
 let connectionStatus = sb ? 'connecting' : 'local'; // 'connecting' | 'live' | 'offline' | 'local'
 
 let STATE = { trucks: [], drivers: [], blocks: [], theme: 'dark' };
-let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null, timelineSearchQuery:'', timelineSort:'name', showUsers:false, usersList:null, usersLoading:false, truckActionModal:null };
+let VIEW = { weekStart: null, editingCsv: null, showTrucks:false, showDrivers:false, searchQuery:'', mode:'board', timelineBy:'driver', selectedTruckIds: [], showHistory:false, historyList:null, showActivity:false, activityList:null, truckTypeFilter:'all', blockTypeFilter:'all', showPdfOptions:false, selectedBlockIds: [], truckSearchQuery:'', truckSort:'number', driverSearchQuery:'', driverSort:'name', calendarMonth:null, calendarDayModal:null, timelineSearchQuery:'', timelineSort:'name', showUsers:false, usersList:null, usersLoading:false, truckActionModal:null };
 const STORE_KEY = 'dispatch-board-data-v1';
 
 let currentUser = null; // { id, email } once signed in, else null
@@ -1505,13 +1505,18 @@ function blockMatchesTruckFilter(b){
   if(VIEW.truckTypeFilter==='solo5cap') return t.vehicleType==='sleeper' && !!t.canDoSolo5;
   return true;
 }
+// Solo-type filter (Solo 1 / Solo 2 / Solo 5). Independent of the truck/status filter above,
+// so the two can be combined (e.g. "Solo 2 only" + "Missing a driver").
+function blockMatchesTypeFilter(b){
+  return VIEW.blockTypeFilter==='all' || b.type===VIEW.blockTypeFilter;
+}
 function isFocusFilter(){
   return ['needs-attention','missing-driver','missing-truck','rejected'].indexOf(VIEW.truckTypeFilter)!==-1;
 }
 
 function renderSearchBar(){
   const q = VIEW.searchQuery;
-  const matchCount = q.trim() ? currentWeekBlocks().filter(blockMatchesSearch).filter(blockMatchesTruckFilter).length : null;
+  const matchCount = q.trim() ? currentWeekBlocks().filter(blockMatchesSearch).filter(blockMatchesTruckFilter).filter(blockMatchesTypeFilter).length : null;
   const input = el('input',{id:'searchInput', class:'search-input', placeholder:'\ud83d\udd0d Search driver or truck number (this week)\u2026', value:q,
     oninput:function(e){ VIEW.searchQuery = e.target.value; render(); }
   });
@@ -1531,6 +1536,13 @@ function renderSearchBar(){
     el('option',{value:'solo5cap', selected: VIEW.truckTypeFilter==='solo5cap'?'selected':null}, 'Solo 5\u2011capable only')
   ]);
   wrap.appendChild(typeFilterSel);
+  const soloFilterSel = el('select',{class:'truck-type-filter', title:'Show only one kind of trip', onchange:function(e){ VIEW.blockTypeFilter = e.target.value; render(); }},[
+    el('option',{value:'all', selected: VIEW.blockTypeFilter==='all'?'selected':null}, '\ud83d\udccb All trip types'),
+    el('option',{value:'solo1', selected: VIEW.blockTypeFilter==='solo1'?'selected':null}, 'Solo 1 only'),
+    el('option',{value:'solo2', selected: VIEW.blockTypeFilter==='solo2'?'selected':null}, 'Solo 2 only'),
+    el('option',{value:'solo5', selected: VIEW.blockTypeFilter==='solo5'?'selected':null}, 'Solo 5 only')
+  ]);
+  wrap.appendChild(soloFilterSel);
   return wrap;
 }
 
@@ -2841,13 +2853,13 @@ function renderTimeline(){
 function renderBoard(){
   const board = el('div',{class:'board'});
   const today = fmtISO(toDateOnly(new Date()));
-  const isSearching = VIEW.searchQuery.trim().length>0 || isFocusFilter();
+  const isSearching = VIEW.searchQuery.trim().length>0 || isFocusFilter() || VIEW.blockTypeFilter!=='all';
   let anyMatchThisWeek = false;
   for(let i=0;i<7;i++){
     const date = addDays(VIEW.weekStart, i);
     const iso = fmtISO(date);
     const allDayBlocks = currentWeekBlocks().filter(function(b){ return b.dayIndex===i; });
-    const dayBlocks = allDayBlocks.filter(blockMatchesSearch).filter(blockMatchesTruckFilter);
+    const dayBlocks = allDayBlocks.filter(blockMatchesSearch).filter(blockMatchesTruckFilter).filter(blockMatchesTypeFilter);
     // While actively searching, don't render this day at all (no header, no stats, no
     // shortage/spare box) unless it actually has a matching block -- searching should show
     // only the thing being searched for, not every day of the week around it.
@@ -2876,7 +2888,7 @@ function renderBoard(){
     col.appendChild(el('div',{class:'day-head'+(iso===today?' today':'')+(shortage>0?' shortage-head':'')}, headChildren));
     const body = el('div',{class:'day-body'});
     if(dayBlocks.length===0){
-      body.appendChild(el('div',{class:'day-empty'}, (VIEW.searchQuery.trim()||VIEW.truckTypeFilter!=='all') ? 'No matches' : 'No blocks'));
+      body.appendChild(el('div',{class:'day-empty'}, (VIEW.searchQuery.trim()||VIEW.truckTypeFilter!=='all'||VIEW.blockTypeFilter!=='all') ? 'No matches' : 'No blocks'));
     } else {
       BLOCK_TYPES.forEach(function(bt, idx){
         const group = dayBlocks.filter(function(b){ return b.type===bt.value && !b.rejected; })
@@ -2900,7 +2912,10 @@ function renderBoard(){
   }
   if(isSearching && !anyMatchThisWeek){
     let msg;
-    if(VIEW.truckTypeFilter==='needs-attention') msg = '\u2705 Every block this week has a driver and a truck';
+    // With the Solo-type filter on, the "every block has a driver/truck" style messages would
+    // be misleading (they'd only be true for that one Solo type), so use a generic one.
+    if(VIEW.blockTypeFilter!=='all') msg = 'No '+VIEW.blockTypeFilter.replace('solo','Solo ')+' blocks match the current filters this week';
+    else if(VIEW.truckTypeFilter==='needs-attention') msg = '\u2705 Every block this week has a driver and a truck';
     else if(VIEW.truckTypeFilter==='missing-driver') msg = '\u2705 Every block this week has a driver';
     else if(VIEW.truckTypeFilter==='missing-truck') msg = '\u2705 Every block this week has a truck';
     else if(VIEW.truckTypeFilter==='rejected') msg = '\u2705 No rejected blocks this week';
