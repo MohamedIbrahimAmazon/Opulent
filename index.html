@@ -2231,9 +2231,10 @@ function restoreOwnersToTruck(truck, processedTruckIds){
 // Called whenever a truck's status changes (single edit or bulk apply). If it just went
 // Down or Grounded, every block it's still on for the rest of THIS real-world week gets
 // freed up and, where possible, handed to another compatible active truck automatically.
-// If it just came back Active, first give it back to its own driver(s) if they were
-// temporarily borrowing a substitute truck, then run the normal truck auto-fill so it also
-// gets picked up for any driver-having-no-truck blocks under the current rules.
+// If it just came back Active, it's given back to its own driver(s) if they were temporarily
+// borrowing a substitute truck. That's all that happens automatically -- it deliberately does
+// NOT also run the general truck auto-fill across the whole week; filling in other blocks is
+// something a person triggers explicitly with the Assign Trucks button (per day).
 function onTruckStatusChanged(truck, prevStatus, newStatus){
   const becameUnusable = (newStatus==='down' || newStatus==='grounded') && prevStatus==='active';
   const becameActive = newStatus==='active' && (prevStatus==='down' || prevStatus==='grounded');
@@ -2247,21 +2248,20 @@ function onTruckStatusChanged(truck, prevStatus, newStatus){
       logAction('Truck '+truck.number+' back to active: restored '+restored+' block(s) to their regular driver/truck');
       showToast('Truck '+truck.number+' is back \u2014 restored '+restored+' block(s) to their regular driver');
     }
-    assignTrucksAutomatically();
   }
 }
 
 function reassignBlocksOffTruck(truck){
-  // Only touch blocks whose trip HASN'T finished yet at the moment the truck goes down/
-  // grounded -- a trip that already completed on this truck earlier today keeps its record
-  // exactly as it happened. Uses blockEndDT (which respects a logged actual end time) rather
-  // than just comparing dates, so "today" doesn't wrongly catch an already-finished trip.
+  // Only touch blocks whose trip HASN'T STARTED yet at the moment the truck goes down/
+  // grounded. A trip already finished on this truck keeps its record exactly as it happened,
+  // and a trip that's currently underway stays on the truck the driver is actually in -- the
+  // card just turns red for it (see renderCard) instead of the truck being pulled away.
   const now = new Date();
   const [rwStart, rwEnd] = weekWindow(getWeekStart(new Date()));
   const weekEndISO = fmtISO(new Date(rwEnd.getTime()-24*60*60000));
 
   const affected = STATE.blocks.filter(function(b){
-    return !b.rejected && b.truckId===truck.id && b.date<=weekEndISO && blockEndDT(b) > now;
+    return !b.rejected && b.truckId===truck.id && b.date<=weekEndISO && blockStartDT(b) > now;
   }).sort(function(a,b){ return blockStartDT(a)-blockStartDT(b); });
 
   if(affected.length===0) return;
@@ -3212,6 +3212,9 @@ function renderCard(b){
   if(isDownSel){
     if(tripAlreadyEnded){
       card.appendChild(el('div',{class:'conflictmsg', style:'color:var(--text-faint)'}, '\u2139\ufe0f Completed on truck '+assignedTruck.number+' before it went down \u2014 nothing to reassign'));
+    } else if(blockStartDT(b) <= new Date()){
+      // Trip is already underway on this truck: it stays with the driver, just flagged red.
+      card.appendChild(el('div',{class:'conflictmsg'}, '\u26d4 Truck '+assignedTruck.number+' is DOWN'+(assignedTruck.note?(' \u2014 '+assignedTruck.note):'')+' \u2014 trip already in progress'));
     } else {
       card.appendChild(el('div',{class:'conflictmsg'}, '\u26d4 Truck '+assignedTruck.number+' is DOWN'+(assignedTruck.note?(' \u2014 '+assignedTruck.note):'')+' \u2014 reassign this block'));
     }
